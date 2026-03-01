@@ -138,13 +138,13 @@ a stream error of type H3_MESSAGE_ERROR.`,
 	})
 
 	// 4.4/6  DATA frames MUST carry TCP tunnel data bidirectionally.
-	//        Verified by making a real h2c GET through the tunnel.
+	//        Verified by making a real HTTPS/H2 GET through the tunnel.
 	g.AddTest(&spec.TestCase{
 		Desc: "DATA frames MUST carry TCP tunnel data bidirectionally",
 		Requirement: `RFC 9114 §4.4: "The payload of any DATA frame sent by the
 client is transmitted by the proxy to the TCP server; data received from the
 TCP server is assembled into DATA frames by the proxy." Verified by sending
-an h2c GET request through the tunnel and checking the 200 response.`,
+an HTTPS/H2 GET request through the tunnel and checking the 200 response.`,
 		Run: func(cfg *config.Config) error {
 			return h3TCPRequestTest(cfg)
 		},
@@ -154,7 +154,7 @@ an h2c GET request through the tunnel and checking the 200 response.`,
 	g.AddTest(&spec.TestCase{
 		Desc: "Multiple DATA round-trips MUST work over a single CONNECT stream",
 		Requirement: `RFC 9114 §4.4: The TCP tunnel persists for the lifetime of
-the HTTP/3 stream; multiple sequential h2c GET requests MUST succeed over
+the HTTP/3 stream; multiple sequential HTTPS/H2 GET requests MUST succeed over
 the same tunnel stream.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH3Conn(cfg)
@@ -182,16 +182,20 @@ the same tunnel stream.`,
 
 			tunnelConn := spec.NewTunnelConnH3(conn, stream, cfg.Timeout)
 			tr := &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					return tunnelConn, nil
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+					tlsConn := tls.Client(tunnelConn, cfg)
+					if err := tlsConn.HandshakeContext(ctx); err != nil {
+						return nil, fmt.Errorf("TLS handshake: %w", err)
+					}
+					return tlsConn, nil
 				},
 			}
 			defer tr.CloseIdleConnections()
 
 			client := &http.Client{Transport: tr}
 			for i := 0; i < 3; i++ {
-				resp, err := client.Get("http://" + cfg.TCPTargetAddr() + "/")
+				resp, err := client.Get("https://" + cfg.TCPTargetAddr() + "/")
 				if err != nil {
 					return fmt.Errorf("request %d: %w", i, err)
 				}
@@ -235,17 +239,21 @@ TCP connection."`,
 				return fmt.Errorf("proxy rejected CONNECT with %d", rh.Status)
 			}
 
-			// Make one h2c GET to confirm the tunnel is working.
+			// Make one HTTPS/H2 GET to confirm the tunnel is working.
 			tunnelConn := spec.NewTunnelConnH3(conn, stream, cfg.Timeout)
 			tr := &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					return tunnelConn, nil
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+					tlsConn := tls.Client(tunnelConn, cfg)
+					if err := tlsConn.HandshakeContext(ctx); err != nil {
+						return nil, fmt.Errorf("TLS handshake: %w", err)
+					}
+					return tlsConn, nil
 				},
 			}
-			resp, err := (&http.Client{Transport: tr}).Get("http://" + cfg.TCPTargetAddr() + "/")
+			resp, err := (&http.Client{Transport: tr}).Get("https://" + cfg.TCPTargetAddr() + "/")
 			if err != nil {
-				return fmt.Errorf("h2c GET: %w", err)
+				return fmt.Errorf("HTTPS/H2 GET: %w", err)
 			}
 			io.Copy(io.Discard, resp.Body) //nolint:errcheck
 			resp.Body.Close()
@@ -306,7 +314,7 @@ func h3ExpectRejectTCP(cfg *config.Config, fields []qpack.HeaderField) error {
 }
 
 // h3TCPRequestTest establishes a CONNECT tunnel over HTTP/3, then makes a
-// real h2c GET request to the H2C target through it, verifying a 200 response.
+// real HTTPS/H2 GET request to the HTTPS/H2 target through it, verifying a 200 response.
 func h3TCPRequestTest(cfg *config.Config) error {
 	conn, err := spec.NewH3Conn(cfg)
 	if err != nil {
@@ -333,21 +341,25 @@ func h3TCPRequestTest(cfg *config.Config) error {
 
 	tunnelConn := spec.NewTunnelConnH3(conn, stream, cfg.Timeout)
 	tr := &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return tunnelConn, nil
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+			tlsConn := tls.Client(tunnelConn, cfg)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				return nil, fmt.Errorf("TLS handshake: %w", err)
+			}
+			return tlsConn, nil
 		},
 	}
 	defer tr.CloseIdleConnections()
 
-	resp, err := (&http.Client{Transport: tr}).Get("http://" + cfg.TCPTargetAddr() + "/")
+	resp, err := (&http.Client{Transport: tr}).Get("https://" + cfg.TCPTargetAddr() + "/")
 	if err != nil {
-		return fmt.Errorf("h2c GET through tunnel: %w", err)
+		return fmt.Errorf("HTTPS/H2 GET through tunnel: %w", err)
 	}
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("h2c GET: expected 200, got %d", resp.StatusCode)
+		return fmt.Errorf("HTTPS/H2 GET: expected 200, got %d", resp.StatusCode)
 	}
 	return nil
 }

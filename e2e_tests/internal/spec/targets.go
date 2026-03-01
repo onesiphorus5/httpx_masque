@@ -1,7 +1,7 @@
 // Package spec – built-in target servers for data-plane conformance tests.
 //
-// StartH2CTarget starts an HTTP/2 cleartext (h2c) server used as the target
-// for TCP CONNECT tunnels (RFC 9113 §8.5, RFC 9114 §4.4).
+// StartH2Target starts an HTTPS/HTTP/2 server used as the target for TCP
+// CONNECT tunnels (RFC 9113 §8.5, RFC 9114 §4.4).
 //
 // StartHTTP3Target starts an HTTP/3 (QUIC) server used as the target for
 // CONNECT-UDP / MASQUE tunnels (RFC 9298).
@@ -22,18 +22,24 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/quic-go/quic-go/http3"
 )
 
-// StartH2CTarget starts an h2c (HTTP/2 cleartext) server on host:port.
-// GET / responds 200 OK with body "ok".  port=0 auto-assigns.
-func StartH2CTarget(host string, port int) (addr string, stop func(), err error) {
+// StartH2Target starts an HTTPS/HTTP/2 server on host:port using an ephemeral
+// self-signed TLS certificate.  GET / responds 200 OK with body "ok".
+// port=0 auto-assigns.
+func StartH2Target(host string, port int) (addr string, stop func(), err error) {
 	listenAddr := fmt.Sprintf("%s:%d", host, port)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return "", nil, fmt.Errorf("listen TCP %s: %w", listenAddr, err)
+	}
+
+	tlsCfg, err := generateSelfSignedTLS("h2-target")
+	if err != nil {
+		ln.Close() //nolint:errcheck
+		return "", nil, fmt.Errorf("generate TLS cert: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -42,8 +48,16 @@ func StartH2CTarget(host string, port int) (addr string, stop func(), err error)
 		w.Write([]byte("ok")) //nolint:errcheck
 	})
 
-	srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}
-	go srv.Serve(ln) //nolint:errcheck
+	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
+	if err := http2.ConfigureServer(srv, &http2.Server{}); err != nil {
+		ln.Close() //nolint:errcheck
+		return "", nil, fmt.Errorf("configure HTTP/2: %w", err)
+	}
+
+	// http2.ConfigureServer may have cloned srv.TLSConfig and added "h2" to
+	// NextProtos; use the updated config for the TLS listener.
+	tlsLn := tls.NewListener(ln, srv.TLSConfig)
+	go srv.Serve(tlsLn) //nolint:errcheck
 
 	return ln.Addr().String(), func() { srv.Close() }, nil
 }
@@ -58,7 +72,7 @@ func StartHTTP3Target(host string, port int) (addr string, stop func(), err erro
 		return "", nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
 	}
 
-	tlsCfg, err := generateSelfSignedTLSForH3()
+	tlsCfg, err := generateSelfSignedTLS("h3-target")
 	if err != nil {
 		pc.Close() //nolint:errcheck
 		return "", nil, fmt.Errorf("generate TLS cert: %w", err)
@@ -70,16 +84,17 @@ func StartHTTP3Target(host string, port int) (addr string, stop func(), err erro
 		w.Write([]byte("ok")) //nolint:errcheck
 	})
 
+	// http3.Server.Serve overrides NextProtos to "h3" automatically.
 	srv := &http3.Server{Handler: mux, TLSConfig: tlsCfg}
 	go srv.Serve(pc) //nolint:errcheck
 
 	return pc.LocalAddr().String(), func() { srv.Close() }, nil //nolint:errcheck
 }
 
-// generateSelfSignedTLSForH3 creates an ephemeral ECDSA P-256 self-signed
-// TLS certificate for the HTTP/3 target server.  The http3.Server.Serve
-// will override NextProtos to "h3", so we only need the certificate here.
-func generateSelfSignedTLSForH3() (*tls.Config, error) {
+// generateSelfSignedTLS creates an ephemeral ECDSA P-256 self-signed TLS
+// certificate with the given CommonName.  The certificate is valid for
+// 127.0.0.1 and expires after 24 hours.
+func generateSelfSignedTLS(cn string) (*tls.Config, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate key: %w", err)
@@ -87,7 +102,7 @@ func generateSelfSignedTLSForH3() (*tls.Config, error) {
 
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "h3-target"},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},

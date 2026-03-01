@@ -62,17 +62,17 @@ func main() {
 		sectionFilter = append(sectionFilter, arg)
 	}
 
-	// Start the built-in H2C target so data-plane tests have a real HTTP/2 server.
-	h2cAddr, stopH2C, err := spec.StartH2CTarget(*tcpTargetHost, *tcpTargetPort)
+	// Start the built-in HTTPS/H2 target so data-plane tests have a real HTTP/2 server.
+	h2Addr, stopH2, err := spec.StartH2Target(*tcpTargetHost, *tcpTargetPort)
 	if err != nil {
-		log.Fatalf("failed to start H2C target: %v", err)
+		log.Fatalf("failed to start HTTPS/H2 target: %v", err)
 	}
-	defer stopH2C()
+	defer stopH2()
 
-	tcpHost, tcpPortStr, _ := net.SplitHostPort(h2cAddr)
+	tcpHost, tcpPortStr, _ := net.SplitHostPort(h2Addr)
 	tcpPort := 0
 	fmt.Sscanf(tcpPortStr, "%d", &tcpPort)
-	fmt.Fprintf(os.Stderr, "H2C target listening on %s\n\n", h2cAddr)
+	fmt.Fprintf(os.Stderr, "HTTPS/H2 target listening on %s\n\n", h2Addr)
 
 	cfg := &config.Config{
 		Host:          *host,
