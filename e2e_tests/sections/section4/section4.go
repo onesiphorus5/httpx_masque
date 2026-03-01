@@ -10,10 +10,12 @@
 package section4
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
-	"time"
+	"io"
+	"net"
+	"net/http"
 
 	"rfc9298spec/internal/config"
 	"rfc9298spec/internal/spec"
@@ -32,7 +34,8 @@ func NewGroup() *spec.TestGroup {
 		Desc: "Context ID 0 MUST be used for UDP proxying payloads",
 		Requirement: `RFC 9298 §5: "The Context ID field of the HTTP Datagram MUST
 be zero for UDP proxying payloads." Context ID 0 carries the UDP proxying
-payload and MUST be accepted by the proxy.`,
+payload and MUST be accepted and forwarded by the proxy. Verified by making
+an HTTP/3 GET to the target through the MASQUE tunnel.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH2Conn(cfg)
 			if err != nil {
@@ -60,32 +63,29 @@ payload and MUST be accepted by the proxy.`,
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 			conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-			// Send a DATAGRAM capsule with context ID = 0.
-			payload := []byte("ctx-id-0-test")
-			capsule := spec.EncodeDatagramCapsule(payload)
-			if err := conn.WriteData(sid, capsule, false); err != nil {
-				return fmt.Errorf("write capsule: %w", err)
+			targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+			if err != nil {
+				return fmt.Errorf("resolve target addr: %w", err)
 			}
 
-			// Expect an echo within the timeout.
-			deadline := time.Now().Add(cfg.Timeout)
-			for time.Now().Before(deadline) {
-				df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-				if err != nil {
-					return fmt.Errorf("read data frame: %w", err)
-				}
-				caps, _ := spec.ReadCapsules(df.Data())
-				for _, c := range caps {
-					if c.Type != spec.CapsuleTypeDatagram {
-						continue
-					}
-					udpPayload, err := spec.ExtractUDPPayload(c)
-					if err == nil && string(udpPayload) == string(payload) {
-						return nil
-					}
-				}
+			// MASQUEPacketConnH2 encodes all WriteTo calls as context-ID-0 capsules;
+			// a successful HTTP/3 GET proves the proxy accepts and forwards them.
+			pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+			defer pc.Close() //nolint:errcheck
+
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+
+			resp, err := spec.H3GetThroughPacketConn(ctx, pc, targetAddr, cfg.TargetAddr(), "/")
+			if err != nil {
+				return fmt.Errorf("HTTP/3 GET with context-ID-0 capsules: %w", err)
 			}
-			return fmt.Errorf("no UDP echo received with context ID 0")
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("expected 200, got %d", resp.StatusCode)
+			}
+			return nil
 		},
 	})
 
@@ -143,7 +143,8 @@ ID is unknown, the proxy MAY reset the stream or silently drop the capsule.`,
 		Desc: "Proxy MUST NOT send DATAGRAM capsules with even-numbered Context IDs",
 		Requirement: `RFC 9298 §4: "Context IDs with even values are client-allocated;
 context IDs with odd values are proxy-allocated." The proxy MUST NOT originate
-capsules using an even Context ID.`,
+capsules using an even Context ID. Verified by making an HTTP/3 GET through
+the tunnel and inspecting all received DATAGRAM capsule context IDs.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH2Conn(cfg)
 			if err != nil {
@@ -171,43 +172,36 @@ capsules using an even Context ID.`,
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 			conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-			// Trigger a response by sending a probe datagram.
-			probe := spec.EncodeDatagramCapsule([]byte("ctx-probe"))
-			conn.WriteData(sid, probe, false) //nolint:errcheck
+			targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+			if err != nil {
+				return fmt.Errorf("resolve target addr: %w", err)
+			}
 
-			deadline := time.Now().Add(cfg.Timeout)
-			for time.Now().Before(deadline) {
-				df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-				if err != nil {
-					break
-				}
-				caps, _ := spec.ReadCapsules(df.Data())
-				for _, c := range caps {
-					if c.Type != spec.CapsuleTypeDatagram {
-						continue
-					}
-					ctxID, err := peekContextID(c.Value)
-					if err != nil {
-						continue
-					}
-					// Context ID 0 is special (it IS even but is the client UDP slot).
-					if ctxID != 0 && ctxID%2 == 0 {
-						return fmt.Errorf(
-							"proxy sent DATAGRAM capsule with even context ID %d "+
-								"(even IDs are client-allocated)",
-							ctxID,
-						)
-					}
-				}
+			// The read loop in MASQUEPacketConnH2 inspects every received capsule
+			// and records any that carry even, non-zero context IDs.
+			pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+			defer pc.Close() //nolint:errcheck
+
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+
+			// Generate real response capsules by making an HTTP/3 GET.
+			resp, err := spec.H3GetThroughPacketConn(ctx, pc, targetAddr, cfg.TargetAddr(), "/")
+			if err != nil {
+				return fmt.Errorf("HTTP/3 GET: %w", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+
+			if pc.EvenContextIDSeen() {
+				return fmt.Errorf(
+					"proxy sent DATAGRAM capsule with even context ID " +
+						"(even IDs are client-allocated; proxy MUST NOT use them)",
+				)
 			}
 			return nil
 		},
 	})
 
 	return g
-}
-
-// peekContextID reads the leading varint (context ID) from a capsule Value.
-func peekContextID(value []byte) (uint64, error) {
-	return spec.ReadVarint(bytes.NewReader(value))
 }

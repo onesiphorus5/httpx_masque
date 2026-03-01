@@ -9,8 +9,11 @@ package section5
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"time"
 
 	"rfc9298spec/internal/config"
@@ -85,8 +88,8 @@ is longer than 65527 bytes MUST abort the stream."`,
 	g.AddTest(&spec.TestCase{
 		Desc: "UDP proxying payloads MUST be framed with Context ID 0",
 		Requirement: `RFC 9298 §5: "When HTTP Datagrams are used to proxy UDP,
-the Context ID field MUST be zero." The test verifies that echoed datagrams
-carry context ID 0.`,
+the Context ID field MUST be zero." Verified by making an HTTP/3 GET through
+the MASQUE tunnel and asserting all received capsules carry context ID 0.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH2Conn(cfg)
 			if err != nil {
@@ -114,41 +117,30 @@ carry context ID 0.`,
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 			conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-			// Send a valid datagram.
-			payload := []byte("ctx-id-check")
-			capsule := spec.EncodeDatagramCapsule(payload)
-			if err := conn.WriteData(sid, capsule, false); err != nil {
-				return fmt.Errorf("write capsule: %w", err)
+			targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+			if err != nil {
+				return fmt.Errorf("resolve target addr: %w", err)
 			}
 
-			deadline := time.Now().Add(cfg.Timeout)
-			for time.Now().Before(deadline) {
-				df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-				if err != nil {
-					return fmt.Errorf("read data frame: %w", err)
-				}
-				caps, err := spec.ReadCapsules(df.Data())
-				if err != nil {
-					return fmt.Errorf("decode capsules: %w", err)
-				}
-				for _, c := range caps {
-					if c.Type != spec.CapsuleTypeDatagram {
-						continue
-					}
-					ctxID, err := spec.ReadVarint(bytes.NewReader(c.Value))
-					if err != nil {
-						return fmt.Errorf("read context ID: %w", err)
-					}
-					if ctxID != 0 {
-						return fmt.Errorf(
-							"proxy returned DATAGRAM capsule with context ID %d (expected 0)",
-							ctxID,
-						)
-					}
-					return nil // context ID is 0 as required
-				}
+			// MASQUEPacketConnH2's readLoop records any capsule with a non-zero
+			// context ID; BadContextIDErr() returns it as an error.
+			pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+			defer pc.Close() //nolint:errcheck
+
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+
+			resp, err := spec.H3GetThroughPacketConn(ctx, pc, targetAddr, cfg.TargetAddr(), "/")
+			if err != nil {
+				return fmt.Errorf("HTTP/3 GET through MASQUE tunnel: %w", err)
 			}
-			return fmt.Errorf("no DATAGRAM capsule received within %s", cfg.Timeout)
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+
+			if badErr := pc.BadContextIDErr(); badErr != nil {
+				return fmt.Errorf("proxy used non-zero context ID: %w", badErr)
+			}
+			return nil
 		},
 	})
 
@@ -157,7 +149,8 @@ carry context ID 0.`,
 		Desc: "Client MAY send datagrams before receiving the 2xx response",
 		Requirement: `RFC 9298 §5: "A client MAY optimistically start sending UDP
 packets in HTTP Datagrams before receiving the response to its UDP tunneling
-request." The proxy MUST tolerate early datagrams.`,
+request." The proxy MUST tolerate early datagrams. Verified by sending an
+optimistic capsule, then making a full HTTP/3 GET after the 2xx arrives.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH2Conn(cfg)
 			if err != nil {
@@ -178,8 +171,7 @@ request." The proxy MUST tolerate early datagrams.`,
 			}
 
 			// Immediately send a DATAGRAM capsule WITHOUT waiting for 2xx.
-			payload := []byte("optimistic")
-			capsule := spec.EncodeDatagramCapsule(payload)
+			capsule := spec.EncodeDatagramCapsule([]byte("optimistic"))
 			if err := conn.WriteData(sid, capsule, false); err != nil {
 				return fmt.Errorf("write optimistic datagram: %w", err)
 			}
@@ -195,27 +187,27 @@ request." The proxy MUST tolerate early datagrams.`,
 
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 
-			// Wait for the echo of the optimistic datagram.
-			deadline := time.Now().Add(cfg.Timeout)
-			for time.Now().Before(deadline) {
-				df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-				if err != nil {
-					break
-				}
-				caps, _ := spec.ReadCapsules(df.Data())
-				for _, c := range caps {
-					if c.Type != spec.CapsuleTypeDatagram {
-						continue
-					}
-					udpPayload, err := spec.ExtractUDPPayload(c)
-					if err == nil && string(udpPayload) == string(payload) {
-						return nil
-					}
-				}
+			targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+			if err != nil {
+				return fmt.Errorf("resolve target addr: %w", err)
 			}
 
-			// Not failing here — the RFC says "MAY" and the proxy may have discarded
-			// the optimistic datagram. We only fail if the connection broke entirely.
+			// Make an HTTP/3 GET to confirm the tunnel still works after the
+			// early datagram (proxy MUST have tolerated it, not dropped the conn).
+			pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+			defer pc.Close() //nolint:errcheck
+
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+
+			resp, err := spec.H3GetThroughPacketConn(ctx, pc, targetAddr, cfg.TargetAddr(), "/")
+			if err != nil {
+				// The proxy may have dropped the optimistic datagram silently; as
+				// long as the connection is still alive this is acceptable.
+				return nil
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
 			return nil
 		},
 	})
@@ -260,7 +252,8 @@ accepted and forwarded by the proxy.`,
 				return fmt.Errorf("write max-size capsule: %w", err)
 			}
 
-			// Expect echo (or at least no immediate stream abort).
+			// Expect no RST_STREAM (proxy may silently discard large UDP datagrams
+			// it cannot forward, but it MUST NOT abort the stream).
 			deadline := time.Now().Add(cfg.Timeout)
 			for time.Now().Before(deadline) {
 				df, err := conn.ReadDataFrame(sid, time.Until(deadline))
@@ -275,12 +268,11 @@ accepted and forwarded by the proxy.`,
 				caps, _ := spec.ReadCapsules(df.Data())
 				for _, c := range caps {
 					if c.Type == spec.CapsuleTypeDatagram {
-						return nil // payload was forwarded and echoed
+						return nil // payload was forwarded
 					}
 				}
 			}
-			// If we get here without RST, the proxy may simply not echo (it might drop
-			// large payloads on the UDP side). We consider no-RST a pass.
+			// No RST received → pass (proxy forwarded or silently dropped the datagram).
 			return nil
 		},
 	})

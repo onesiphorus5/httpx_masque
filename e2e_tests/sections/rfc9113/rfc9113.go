@@ -19,9 +19,15 @@
 package rfc9113
 
 import (
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 
+	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 
 	"rfc9298spec/internal/config"
@@ -131,13 +137,15 @@ a stream error of type PROTOCOL_ERROR.`,
 	})
 
 	// 8.5/6  DATA frames MUST carry TCP tunnel data bidirectionally.
+	//        Verified by making a real h2c GET through the tunnel.
 	g.AddTest(&spec.TestCase{
 		Desc: "DATA frames MUST carry TCP tunnel data bidirectionally",
 		Requirement: `RFC 9113 §8.5: "The payload of any DATA frame sent by the
 client is transmitted by the proxy to the TCP server; data received from the
-TCP server is assembled into DATA frames by the proxy."`,
+TCP server is assembled into DATA frames by the proxy." Verified by sending
+an h2c GET request through the tunnel and checking the 200 response.`,
 		Run: func(cfg *config.Config) error {
-			return h2TCPEchoTest(cfg, []byte("rfc9113-tcp-probe"))
+			return h2TCPRequestTest(cfg)
 		},
 	})
 
@@ -145,7 +153,8 @@ TCP server is assembled into DATA frames by the proxy."`,
 	g.AddTest(&spec.TestCase{
 		Desc: "Multiple DATA round-trips MUST work over a single CONNECT stream",
 		Requirement: `RFC 9113 §8.5: The TCP tunnel persists for the lifetime of
-the HTTP/2 stream; multiple sequential DATA exchanges MUST succeed.`,
+the HTTP/2 stream; multiple sequential h2c GET requests MUST succeed over
+the same tunnel stream.`,
 		Run: func(cfg *config.Config) error {
 			conn, err := spec.NewH2Conn(cfg)
 			if err != nil {
@@ -173,17 +182,25 @@ the HTTP/2 stream; multiple sequential DATA exchanges MUST succeed.`,
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 			conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-			for i, payload := range []string{"first", "second", "third"} {
-				if err := conn.WriteData(sid, []byte(payload), false); err != nil {
-					return fmt.Errorf("write data %d: %w", i, err)
-				}
-				df, err := conn.ReadDataFrame(sid, cfg.Timeout)
+			tunnelConn := spec.NewTunnelConnH2(conn, sid, cfg.Timeout)
+			tr := &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					return tunnelConn, nil
+				},
+			}
+			defer tr.CloseIdleConnections()
+
+			client := &http.Client{Transport: tr}
+			for i := 0; i < 3; i++ {
+				resp, err := client.Get("http://" + cfg.TCPTargetAddr() + "/")
 				if err != nil {
-					return fmt.Errorf("read echo %d: %w", i, err)
+					return fmt.Errorf("request %d: %w", i, err)
 				}
-				if string(df.Data()) != payload {
-					return fmt.Errorf("echo %d mismatch: got %q, want %q",
-						i, df.Data(), payload)
+				io.Copy(io.Discard, resp.Body) //nolint:errcheck
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					return fmt.Errorf("request %d: expected 200, got %d", i, resp.StatusCode)
 				}
 			}
 			return nil
@@ -224,24 +241,35 @@ the TCP connection."`,
 			conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 			conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-			// Send data and close the stream (END_STREAM).
-			payload := []byte("goodbye")
-			if err := conn.WriteData(sid, payload, true); err != nil {
-				return fmt.Errorf("write END_STREAM data: %w", err)
+			// Make one h2c GET to confirm the tunnel is working.
+			tunnelConn := spec.NewTunnelConnH2(conn, sid, cfg.Timeout)
+			tr := &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					return tunnelConn, nil
+				},
+			}
+			resp, err := (&http.Client{Transport: tr}).Get("http://" + cfg.TCPTargetAddr() + "/")
+			if err != nil {
+				return fmt.Errorf("h2c GET: %w", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			tr.CloseIdleConnections()
+
+			// Signal half-close on the outer CONNECT stream (END_STREAM).
+			if err := conn.WriteData(sid, nil, true); err != nil {
+				return fmt.Errorf("write END_STREAM: %w", err)
 			}
 
-			// The echo server sends back the data, then closes its end.
-			// The proxy will forward that close as DATA with END_STREAM (or RST_STREAM).
-			// We accept the echo or any orderly stream closure.
-			df, err := conn.ReadDataFrame(sid, cfg.Timeout)
+			// The proxy closes its TCP side; we accept RST_STREAM or orderly close.
+			_, err = conn.ReadDataFrame(sid, cfg.Timeout)
 			if err != nil {
 				if errors.Is(err, spec.ErrRSTStream) {
-					return nil // proxy closed stream — acceptable
+					return nil // proxy reset stream — acceptable
 				}
-				// io.EOF or other orderly close is fine too.
-				return nil
+				return nil // io.EOF or other orderly close is fine
 			}
-			_ = df // echo received — stream will close after this
 			return nil
 		},
 	})
@@ -282,9 +310,9 @@ func h2ExpectRejectTCP(cfg *config.Config, fields []hpack.HeaderField) error {
 	return fmt.Errorf("expected rejection (4xx or RST_STREAM), got %d", rh.Status)
 }
 
-// h2TCPEchoTest establishes a CONNECT tunnel, sends payload, and verifies the
-// TCP echo server's reply arrives back unchanged.
-func h2TCPEchoTest(cfg *config.Config, payload []byte) error {
+// h2TCPRequestTest establishes a CONNECT tunnel and makes a real h2c GET
+// request to the H2C target through it, verifying a 200 response.
+func h2TCPRequestTest(cfg *config.Config) error {
 	conn, err := spec.NewH2Conn(cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -311,17 +339,23 @@ func h2TCPEchoTest(cfg *config.Config, payload []byte) error {
 	conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 	conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-	if err := conn.WriteData(sid, payload, false); err != nil {
-		return fmt.Errorf("write data: %w", err)
+	tunnelConn := spec.NewTunnelConnH2(conn, sid, cfg.Timeout)
+	tr := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return tunnelConn, nil
+		},
 	}
+	defer tr.CloseIdleConnections()
 
-	df, err := conn.ReadDataFrame(sid, cfg.Timeout)
+	resp, err := (&http.Client{Transport: tr}).Get("http://" + cfg.TCPTargetAddr() + "/")
 	if err != nil {
-		return fmt.Errorf("read echo: %w", err)
+		return fmt.Errorf("h2c GET through tunnel: %w", err)
 	}
-	if string(df.Data()) != string(payload) {
-		return fmt.Errorf("echo mismatch: got %q, want %q", df.Data(), payload)
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("h2c GET: expected 200, got %d", resp.StatusCode)
 	}
 	return nil
 }
-

@@ -68,17 +68,17 @@ func main() {
 		sectionFilter = append(sectionFilter, arg)
 	}
 
-	// Start the built-in UDP echo server so data-plane tests have a target.
-	echoAddr, stopEcho, err := startUDPEchoServer(*targetHost, *targetPort)
+	// Start the built-in HTTP/3 target so data-plane tests have a real server.
+	h3Addr, stopH3, err := spec.StartHTTP3Target(*targetHost, *targetPort)
 	if err != nil {
-		log.Fatalf("failed to start UDP echo server: %v", err)
+		log.Fatalf("failed to start HTTP/3 target: %v", err)
 	}
-	defer stopEcho()
+	defer stopH3()
 
-	echoHost, echoPortStr, _ := net.SplitHostPort(echoAddr)
+	echoHost, echoPortStr, _ := net.SplitHostPort(h3Addr)
 	echoPort := 0
 	fmt.Sscanf(echoPortStr, "%d", &echoPort)
-	fmt.Fprintf(os.Stderr, "UDP echo server listening on %s\n\n", echoAddr)
+	fmt.Fprintf(os.Stderr, "HTTP/3 target listening on %s\n\n", h3Addr)
 
 	cfg := &config.Config{
 		Host:          *host,
@@ -127,23 +127,3 @@ func main() {
 	}
 }
 
-// startUDPEchoServer starts a UDP server on host:port that echoes every
-// datagram back to its sender.  port=0 auto-assigns.
-func startUDPEchoServer(host string, port int) (addr string, stop func(), err error) {
-	listenAddr := fmt.Sprintf("%s:%d", host, port)
-	conn, err := net.ListenPacket("udp", listenAddr)
-	if err != nil {
-		return "", nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
-	}
-	go func() {
-		buf := make([]byte, 65535)
-		for {
-			n, src, err := conn.ReadFrom(buf)
-			if err != nil {
-				return
-			}
-			conn.WriteTo(buf[:n], src) //nolint:errcheck
-		}
-	}()
-	return conn.LocalAddr().String(), func() { conn.Close() }, nil
-}

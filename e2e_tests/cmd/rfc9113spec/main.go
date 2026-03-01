@@ -20,7 +20,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -63,17 +62,17 @@ func main() {
 		sectionFilter = append(sectionFilter, arg)
 	}
 
-	// Start the built-in TCP echo server so data-plane tests have a target.
-	tcpEchoAddr, stopTCPEcho, err := startTCPEchoServer(*tcpTargetHost, *tcpTargetPort)
+	// Start the built-in H2C target so data-plane tests have a real HTTP/2 server.
+	h2cAddr, stopH2C, err := spec.StartH2CTarget(*tcpTargetHost, *tcpTargetPort)
 	if err != nil {
-		log.Fatalf("failed to start TCP echo server: %v", err)
+		log.Fatalf("failed to start H2C target: %v", err)
 	}
-	defer stopTCPEcho()
+	defer stopH2C()
 
-	tcpHost, tcpPortStr, _ := net.SplitHostPort(tcpEchoAddr)
+	tcpHost, tcpPortStr, _ := net.SplitHostPort(h2cAddr)
 	tcpPort := 0
 	fmt.Sscanf(tcpPortStr, "%d", &tcpPort)
-	fmt.Fprintf(os.Stderr, "TCP echo server listening on %s\n\n", tcpEchoAddr)
+	fmt.Fprintf(os.Stderr, "H2C target listening on %s\n\n", h2cAddr)
 
 	cfg := &config.Config{
 		Host:          *host,
@@ -119,25 +118,3 @@ func main() {
 	}
 }
 
-// startTCPEchoServer starts a TCP server on host:port that echoes every byte
-// back to the sender.  port=0 auto-assigns.
-func startTCPEchoServer(host string, port int) (addr string, stop func(), err error) {
-	listenAddr := fmt.Sprintf("%s:%d", host, port)
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return "", nil, fmt.Errorf("listen TCP %s: %w", listenAddr, err)
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				io.Copy(c, c) //nolint:errcheck
-			}(c)
-		}
-	}()
-	return ln.Addr().String(), func() { ln.Close() }, nil
-}

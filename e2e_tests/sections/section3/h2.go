@@ -5,8 +5,12 @@ package section3
 // §3.1  UDP Proxy Handling (via HTTP/2 data transfer)
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -284,45 +288,45 @@ func newSection31H2() *spec.TestGroup {
 
 	// 3.1/1  Proxy MUST forward client datagrams to the target.
 	g.AddTest(&spec.TestCase{
-		Desc: "Proxy MUST forward UDP datagrams from client to target",
+		Desc: "Proxy MUST forward UDP payloads to the HTTP/3 target",
 		Requirement: `RFC 9298 §3.1: "The proxy MUST forward UDP payloads received
-in DATAGRAM capsules to the target." The test sends a UDP datagram and
-verifies the target UDP echo server receives it.`,
+in DATAGRAM capsules to the target." Verified by establishing a QUIC
+connection to the HTTP/3 target through the tunnel and checking a 200 GET.`,
 		Run: func(cfg *config.Config) error {
-			return h2UDPEchoTest(cfg, []byte("rfc9298-probe"))
+			return h2UDPHTTPTest(cfg)
 		},
 	})
 
 	// 3.1/2  Proxy MUST return target UDP responses to the client.
 	g.AddTest(&spec.TestCase{
-		Desc: "Proxy MUST return UDP responses from target to client",
+		Desc: "Proxy MUST return HTTP/3 target responses to the client",
 		Requirement: `RFC 9298 §3.1: "The proxy MUST forward UDP payloads received
-from the target to the client in DATAGRAM capsules." The test verifies the
-echo is received back through the tunnel.`,
+from the target to the client in DATAGRAM capsules." Verified by receiving
+a 200 response from the HTTP/3 target via the tunnel.`,
 		Run: func(cfg *config.Config) error {
-			return h2UDPEchoTest(cfg, []byte("ping"))
+			return h2UDPHTTPTest(cfg)
 		},
 	})
 
 	// 3.1/3  Multiple datagrams can flow over a single stream.
 	g.AddTest(&spec.TestCase{
-		Desc: "Multiple UDP datagrams MAY flow over a single connect-udp stream",
+		Desc: "Multiple HTTP/3 requests MAY flow over a single connect-udp stream",
 		Requirement: `RFC 9298 §3.1: The proxy MUST keep the UDP socket open for
 the lifetime of the request stream, allowing multiple datagrams to be
-exchanged.`,
+exchanged. Verified by making 3 sequential HTTP/3 GET requests.`,
 		Run: func(cfg *config.Config) error {
-			return h2MultiDatagramTest(cfg, 3)
+			return h2MultiHTTPTest(cfg, 3)
 		},
 	})
 
 	// 3.1/4  Socket MUST stay open while the stream is open.
 	g.AddTest(&spec.TestCase{
-		Desc: "UDP socket MUST remain open while the request stream is open",
+		Desc: "UDP socket MUST remain open across an idle gap (HTTP/3 session)",
 		Requirement: `RFC 9298 §3.1: "The proxy MUST keep the UDP socket open while
-the request stream is open." Test sends two sequential datagrams with a
-1-second gap and verifies both are echoed.`,
+the request stream is open." Verified by sending two HTTP/3 GETs with a
+1-second gap and checking both succeed.`,
 		Run: func(cfg *config.Config) error {
-			return h2SequentialDatagramTest(cfg, time.Second)
+			return h2SequentialHTTPTest(cfg, time.Second)
 		},
 	})
 
@@ -363,72 +367,9 @@ func h2ExpectRejection(cfg *config.Config, fields []hpack.HeaderField) error {
 	return fmt.Errorf("expected rejection (4xx or RST_STREAM), got %d", rh.Status)
 }
 
-// h2UDPEchoTest dials a fresh connect-udp stream, sends payload as a DATAGRAM
-// capsule, and asserts the echo server's reply arrives back.
-func h2UDPEchoTest(cfg *config.Config, payload []byte) error {
-	conn, err := spec.NewH2Conn(cfg)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.Handshake(); err != nil {
-		return fmt.Errorf("handshake: %w", err)
-	}
-
-	sid, err := conn.SendConnectUDP(cfg)
-	if err != nil {
-		return fmt.Errorf("send CONNECT: %w", err)
-	}
-
-	rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if rh.Status < 200 || rh.Status > 299 {
-		return fmt.Errorf("proxy rejected CONNECT-UDP with %d", rh.Status)
-	}
-
-	// Open the receive window so the server can send datagrams to us.
-	conn.WriteWindowUpdate(sid, 65535)        //nolint:errcheck
-	conn.WriteWindowUpdate(0, 65535)          //nolint:errcheck
-
-	// Send a DATAGRAM capsule containing the UDP payload.
-	capsule := spec.EncodeDatagramCapsule(payload)
-	if err := conn.WriteData(sid, capsule, false); err != nil {
-		return fmt.Errorf("write datagram capsule: %w", err)
-	}
-
-	// Read DATA frames until we get one containing a DATAGRAM capsule back.
-	deadline := time.Now().Add(cfg.Timeout)
-	for time.Now().Before(deadline) {
-		df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-		if err != nil {
-			return fmt.Errorf("waiting for echo datagram: %w", err)
-		}
-
-		caps, err := spec.ReadCapsules(df.Data())
-		if err != nil {
-			return fmt.Errorf("decode capsules: %w", err)
-		}
-		for _, c := range caps {
-			if c.Type != spec.CapsuleTypeDatagram {
-				continue
-			}
-			udpPayload, err := spec.ExtractUDPPayload(c)
-			if err != nil {
-				continue
-			}
-			if string(udpPayload) == string(payload) {
-				return nil // echo received
-			}
-		}
-	}
-	return fmt.Errorf("no UDP echo received within %s", cfg.Timeout)
-}
-
-// h2MultiDatagramTest sends n datagrams and verifies each is echoed back.
-func h2MultiDatagramTest(cfg *config.Config, n int) error {
+// h2UDPHTTPTest establishes a connect-udp tunnel and makes a single HTTP/3 GET
+// to the HTTP/3 target through it, verifying a 200 response.
+func h2UDPHTTPTest(cfg *config.Config) error {
 	conn, err := spec.NewH2Conn(cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -455,43 +396,33 @@ func h2MultiDatagramTest(cfg *config.Config, n int) error {
 	conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 	conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-	received := make(map[string]bool)
-	for i := 0; i < n; i++ {
-		payload := fmt.Sprintf("datagram-%d", i)
-		capsule := spec.EncodeDatagramCapsule([]byte(payload))
-		if err := conn.WriteData(sid, capsule, false); err != nil {
-			return fmt.Errorf("write datagram %d: %w", i, err)
-		}
+	targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+	if err != nil {
+		return fmt.Errorf("resolve target addr: %w", err)
 	}
 
-	deadline := time.Now().Add(cfg.Timeout)
-	for len(received) < n && time.Now().Before(deadline) {
-		df, err := conn.ReadDataFrame(sid, time.Until(deadline))
-		if err != nil {
-			break
-		}
-		caps, _ := spec.ReadCapsules(df.Data())
-		for _, c := range caps {
-			if c.Type != spec.CapsuleTypeDatagram {
-				continue
-			}
-			udpPayload, err := spec.ExtractUDPPayload(c)
-			if err != nil {
-				continue
-			}
-			received[string(udpPayload)] = true
-		}
-	}
+	pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+	defer pc.Close() //nolint:errcheck
 
-	if len(received) < n {
-		return fmt.Errorf("expected %d echoes, received %d", n, len(received))
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	resp, err := spec.H3GetThroughPacketConn(ctx, pc, targetAddr, cfg.TargetAddr(), "/")
+	if err != nil {
+		return fmt.Errorf("HTTP/3 GET through MASQUE tunnel: %w", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 	return nil
 }
 
-// h2SequentialDatagramTest sends one datagram, waits gap, then sends another,
-// verifying both are echoed (proving the socket stays open).
-func h2SequentialDatagramTest(cfg *config.Config, gap time.Duration) error {
+// h2MultiHTTPTest establishes a connect-udp tunnel, then makes n sequential
+// HTTP/3 GET requests over the same QUIC connection, verifying that multiple
+// datagram flows can traverse a single connect-udp stream.
+func h2MultiHTTPTest(cfg *config.Config, n int) error {
 	conn, err := spec.NewH2Conn(cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -518,35 +449,101 @@ func h2SequentialDatagramTest(cfg *config.Config, gap time.Duration) error {
 	conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
 	conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
 
-	for i, payload := range []string{"first", "second"} {
+	targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+	if err != nil {
+		return fmt.Errorf("resolve target addr: %w", err)
+	}
+
+	pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+	defer pc.Close() //nolint:errcheck
+
+	// One http3.Transport → one QUIC connection → n HTTP/3 requests.
+	client, cleanup := spec.NewH3ClientForPacketConn(pc, targetAddr, cfg.TargetHost)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout*time.Duration(n+1))
+	defer cancel()
+
+	for i := 0; i < n; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+cfg.TargetAddr()+"/", nil)
+		if err != nil {
+			return fmt.Errorf("build request %d: %w", i, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("request %d: %w", i, err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("request %d: expected 200, got %d", i, resp.StatusCode)
+		}
+	}
+	return nil
+}
+
+// h2SequentialHTTPTest establishes a connect-udp tunnel, makes a first HTTP/3
+// GET, waits gap, then makes a second GET — both must succeed (proving the
+// proxy UDP socket stays open across the idle gap).
+func h2SequentialHTTPTest(cfg *config.Config, gap time.Duration) error {
+	conn, err := spec.NewH2Conn(cfg)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Handshake(); err != nil {
+		return fmt.Errorf("handshake: %w", err)
+	}
+
+	sid, err := conn.SendConnectUDP(cfg)
+	if err != nil {
+		return fmt.Errorf("send CONNECT: %w", err)
+	}
+
+	rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if rh.Status < 200 || rh.Status > 299 {
+		return fmt.Errorf("proxy rejected CONNECT-UDP with %d", rh.Status)
+	}
+
+	conn.WriteWindowUpdate(sid, 65535) //nolint:errcheck
+	conn.WriteWindowUpdate(0, 65535)   //nolint:errcheck
+
+	targetAddr, err := net.ResolveUDPAddr("udp", cfg.TargetAddr())
+	if err != nil {
+		return fmt.Errorf("resolve target addr: %w", err)
+	}
+
+	pc := spec.NewMASQUEPacketConnH2(conn, sid, targetAddr, cfg.Timeout)
+	defer pc.Close() //nolint:errcheck
+
+	// One http3.Transport reused for both GETs (same QUIC connection).
+	client, cleanup := spec.NewH3ClientForPacketConn(pc, targetAddr, cfg.TargetHost)
+	defer cleanup()
+
+	totalTimeout := cfg.Timeout*2 + gap
+	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
+	defer cancel()
+
+	for i, label := range []string{"first", "second"} {
 		if i > 0 {
 			time.Sleep(gap)
 		}
-		capsule := spec.EncodeDatagramCapsule([]byte(payload))
-		if err := conn.WriteData(sid, capsule, false); err != nil {
-			return fmt.Errorf("write datagram %d: %w", i, err)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+cfg.TargetAddr()+"/", nil)
+		if err != nil {
+			return fmt.Errorf("build %s request: %w", label, err)
 		}
-		// Wait for echo.
-		echoDeadline := time.Now().Add(cfg.Timeout)
-		echoed := false
-		for !echoed && time.Now().Before(echoDeadline) {
-			df, err := conn.ReadDataFrame(sid, time.Until(echoDeadline))
-			if err != nil {
-				return fmt.Errorf("waiting for echo %d: %w", i, err)
-			}
-			caps, _ := spec.ReadCapsules(df.Data())
-			for _, c := range caps {
-				if c.Type != spec.CapsuleTypeDatagram {
-					continue
-				}
-				udp, err := spec.ExtractUDPPayload(c)
-				if err == nil && string(udp) == payload {
-					echoed = true
-				}
-			}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("%s GET after %s gap: %w", label, gap, err)
 		}
-		if !echoed {
-			return fmt.Errorf("no echo for datagram %d (%q) after %s gap", i, payload, gap)
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("%s GET: expected 200, got %d", label, resp.StatusCode)
 		}
 	}
 	return nil
