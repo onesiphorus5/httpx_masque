@@ -1,0 +1,38 @@
+# Dockerfile.targets – builds the target-server binary that runs both an
+# HTTPS/H2 (TCP 8444) and HTTP/3 (UDP 8445) server for e2e conformance tests.
+#
+# Build:
+#   docker build -f Dockerfile.targets -t rfc9298-targets .
+#
+# Run:
+#   docker run --rm -p 8444:8444/tcp -p 8445:8445/udp rfc9298-targets
+
+# ── Stage 1: build ──────────────────────────────────────────────────────────
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /src
+
+# Download dependencies first (better layer caching).
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+        -ldflags="-s -w" \
+        -o /target-server \
+        ./cmd/target-server
+
+# ── Stage 2: minimal runtime ────────────────────────────────────────────────
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /target-server /target-server
+
+# TCP port for HTTPS/H2 target
+EXPOSE 8444/tcp
+# UDP port for HTTP/3 target
+EXPOSE 8445/udp
+
+ENTRYPOINT ["/target-server"]

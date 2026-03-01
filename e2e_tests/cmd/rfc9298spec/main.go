@@ -45,8 +45,8 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "per-test timeout")
 	verbose := flag.Bool("verbose", false, "show extra failure detail")
 	dryRun := flag.Bool("dry-run", false, "list tests without executing them")
-	targetHost := flag.String("target-host", "127.0.0.1", "target host for UDP echo (auto-started)")
-	targetPort := flag.Int("target-port", 0, "target port for UDP echo (0 = auto-assign)")
+	targetHost := flag.String("target-host", "127.0.0.1", "HTTP/3 target host")
+	targetPort := flag.Int("target-port", 0, "HTTP/3 target UDP port (0 = start a local server automatically)")
 	pathTmpl := flag.String("path", "", `URI template path (default "/.well-known/masque/udp/{target_host}/{target_port}/"`)
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
 	flag.Parse()
@@ -68,17 +68,25 @@ func main() {
 		sectionFilter = append(sectionFilter, arg)
 	}
 
-	// Start the built-in HTTP/3 target so data-plane tests have a real server.
-	h3Addr, stopH3, err := spec.StartHTTP3Target(*targetHost, *targetPort)
-	if err != nil {
-		log.Fatalf("failed to start HTTP/3 target: %v", err)
+	// When target-port > 0 the caller supplies a pre-started target
+	// (e.g. a Docker container); otherwise start one locally.
+	stopH3 := func() {}
+	echoHost := *targetHost
+	echoPort := *targetPort
+	if *targetPort == 0 {
+		h3Addr, stop, err := spec.StartHTTP3Target(*targetHost, 0)
+		if err != nil {
+			log.Fatalf("failed to start HTTP/3 target: %v", err)
+		}
+		stopH3 = stop
+		var echoPortStr string
+		echoHost, echoPortStr, _ = net.SplitHostPort(h3Addr)
+		fmt.Sscanf(echoPortStr, "%d", &echoPort)
+		fmt.Fprintf(os.Stderr, "HTTP/3 target listening on %s\n\n", h3Addr)
+	} else {
+		fmt.Fprintf(os.Stderr, "HTTP/3 target (external): %s:%d\n\n", echoHost, echoPort)
 	}
 	defer stopH3()
-
-	echoHost, echoPortStr, _ := net.SplitHostPort(h3Addr)
-	echoPort := 0
-	fmt.Sscanf(echoPortStr, "%d", &echoPort)
-	fmt.Fprintf(os.Stderr, "HTTP/3 target listening on %s\n\n", h3Addr)
 
 	cfg := &config.Config{
 		Host:          *host,

@@ -1,7 +1,15 @@
-BINARIES := rfc9298spec rfc9113spec rfc9114spec
+BINARIES        := rfc9298spec rfc9113spec rfc9114spec
+TARGET_IMAGE    := rfc9298-targets
+TARGET_CONTAINER:= rfc9298-targets
 
-.PHONY: all build test vet run run-section ci clean tidy help \
-        run-9298 run-9113 run-9114
+# Ports exposed by the target-server container.
+TARGET_H2_PORT  := 8444
+TARGET_H3_PORT  := 8445
+
+.PHONY: all build test vet run run-9298 run-9113 run-9114 ci clean tidy \
+        docker-build docker-start-targets docker-stop-targets \
+        run-9298-docker run-9113-docker run-9114-docker run-docker \
+        ci-docker help
 
 all: build
 
@@ -20,7 +28,9 @@ test:
 vet:
 	go vet ./...
 
-## run-9298: run RFC 9298 suite against a local proxy
+# ── Local targets (auto-start servers on localhost) ─────────────────────────
+
+## run-9298: run RFC 9298 suite against a local proxy (auto-starts HTTP/3 target)
 run-9298: build
 	./rfc9298spec \
 		-host 127.0.0.1 \
@@ -28,7 +38,7 @@ run-9298: build
 		-skip-verify \
 		-timeout 5s
 
-## run-9113: run RFC 9113 §8.5 suite against a local proxy
+## run-9113: run RFC 9113 §8.5 suite against a local proxy (auto-starts HTTPS/H2 target)
 run-9113: build
 	./rfc9113spec \
 		-host 127.0.0.1 \
@@ -36,7 +46,7 @@ run-9113: build
 		-skip-verify \
 		-timeout 5s
 
-## run-9114: run RFC 9114 §4.4 suite against a local proxy
+## run-9114: run RFC 9114 §4.4 suite against a local proxy (auto-starts HTTPS/H2 target)
 run-9114: build
 	./rfc9114spec \
 		-host 127.0.0.1 \
@@ -44,10 +54,10 @@ run-9114: build
 		-skip-verify \
 		-timeout 5s
 
-## run: run all three suites
+## run: run all three suites (auto-start targets locally)
 run: run-9298 run-9113 run-9114
 
-## ci: build, vet, and emit JUnit reports (for CI pipelines)
+## ci: build, vet, and emit JUnit reports (auto-start targets locally)
 ci: build
 	./rfc9298spec \
 		-host 127.0.0.1 \
@@ -64,6 +74,93 @@ ci: build
 		-port 8443 \
 		-skip-verify \
 		-junit-report report-9114.xml || true
+
+# ── Docker targets (target servers run in a container) ──────────────────────
+
+## docker-build: build the target-server Docker image
+docker-build:
+	docker build -f Dockerfile.targets -t $(TARGET_IMAGE) .
+
+## docker-start-targets: start the target-server container in the background
+docker-start-targets: docker-build
+	docker run --rm -d \
+		--name $(TARGET_CONTAINER) \
+		-p $(TARGET_H2_PORT):8444/tcp \
+		-p $(TARGET_H3_PORT):8445/udp \
+		$(TARGET_IMAGE)
+	@echo "Waiting for target servers to be ready..."
+	@sleep 2
+
+## docker-stop-targets: stop and remove the target-server container
+docker-stop-targets:
+	docker stop $(TARGET_CONTAINER) 2>/dev/null || true
+
+## run-9298-docker: run RFC 9298 suite using the Docker target container
+run-9298-docker: build docker-start-targets
+	./rfc9298spec \
+		-host 127.0.0.1 \
+		-port 8443 \
+		-skip-verify \
+		-target-host 127.0.0.1 \
+		-target-port $(TARGET_H3_PORT) \
+		-timeout 5s; \
+	$(MAKE) docker-stop-targets
+
+## run-9113-docker: run RFC 9113 §8.5 suite using the Docker target container
+run-9113-docker: build docker-start-targets
+	./rfc9113spec \
+		-host 127.0.0.1 \
+		-port 8443 \
+		-skip-verify \
+		-tcp-target-host 127.0.0.1 \
+		-tcp-target-port $(TARGET_H2_PORT) \
+		-timeout 5s; \
+	$(MAKE) docker-stop-targets
+
+## run-9114-docker: run RFC 9114 §4.4 suite using the Docker target container
+run-9114-docker: build docker-start-targets
+	./rfc9114spec \
+		-host 127.0.0.1 \
+		-port 8443 \
+		-skip-verify \
+		-tcp-target-host 127.0.0.1 \
+		-tcp-target-port $(TARGET_H2_PORT) \
+		-timeout 5s; \
+	$(MAKE) docker-stop-targets
+
+## run-docker: run all three suites using a single Docker target container
+run-docker: build docker-start-targets
+	./rfc9298spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-target-host 127.0.0.1 -target-port $(TARGET_H3_PORT) \
+		-timeout 5s; \
+	./rfc9113spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-timeout 5s; \
+	./rfc9114spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-timeout 5s; \
+	$(MAKE) docker-stop-targets
+
+## ci-docker: build, vet, emit JUnit reports using Docker target container
+ci-docker: build docker-start-targets
+	./rfc9298spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-target-host 127.0.0.1 -target-port $(TARGET_H3_PORT) \
+		-junit-report report-9298.xml || true; \
+	./rfc9113spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-junit-report report-9113.xml || true; \
+	./rfc9114spec \
+		-host 127.0.0.1 -port 8443 -skip-verify \
+		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-junit-report report-9114.xml || true; \
+	$(MAKE) docker-stop-targets
+
+# ── Housekeeping ─────────────────────────────────────────────────────────────
 
 ## clean: remove built binaries and reports
 clean:

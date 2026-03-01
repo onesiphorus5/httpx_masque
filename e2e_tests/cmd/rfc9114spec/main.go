@@ -40,8 +40,8 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "per-test timeout")
 	verbose := flag.Bool("verbose", false, "show extra failure detail")
 	dryRun := flag.Bool("dry-run", false, "list tests without executing them")
-	tcpTargetHost := flag.String("tcp-target-host", "127.0.0.1", "target host for TCP echo (auto-started)")
-	tcpTargetPort := flag.Int("tcp-target-port", 0, "target port for TCP echo (0 = auto-assign)")
+	tcpTargetHost := flag.String("tcp-target-host", "127.0.0.1", "HTTPS/H2 target host")
+	tcpTargetPort := flag.Int("tcp-target-port", 0, "HTTPS/H2 target port (0 = start a local server automatically)")
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
 	flag.Parse()
 
@@ -62,17 +62,25 @@ func main() {
 		sectionFilter = append(sectionFilter, arg)
 	}
 
-	// Start the built-in HTTPS/H2 target so data-plane tests have a real HTTP/2 server.
-	h2Addr, stopH2, err := spec.StartH2Target(*tcpTargetHost, *tcpTargetPort)
-	if err != nil {
-		log.Fatalf("failed to start HTTPS/H2 target: %v", err)
+	// When tcp-target-port > 0 the caller supplies a pre-started target
+	// (e.g. a Docker container); otherwise start one locally.
+	stopH2 := func() {}
+	tcpHost := *tcpTargetHost
+	tcpPort := *tcpTargetPort
+	if *tcpTargetPort == 0 {
+		h2Addr, stop, err := spec.StartH2Target(*tcpTargetHost, 0)
+		if err != nil {
+			log.Fatalf("failed to start HTTPS/H2 target: %v", err)
+		}
+		stopH2 = stop
+		var tcpPortStr string
+		tcpHost, tcpPortStr, _ = net.SplitHostPort(h2Addr)
+		fmt.Sscanf(tcpPortStr, "%d", &tcpPort)
+		fmt.Fprintf(os.Stderr, "HTTPS/H2 target listening on %s\n\n", h2Addr)
+	} else {
+		fmt.Fprintf(os.Stderr, "HTTPS/H2 target (external): %s:%d\n\n", tcpHost, tcpPort)
 	}
 	defer stopH2()
-
-	tcpHost, tcpPortStr, _ := net.SplitHostPort(h2Addr)
-	tcpPort := 0
-	fmt.Sscanf(tcpPortStr, "%d", &tcpPort)
-	fmt.Fprintf(os.Stderr, "HTTPS/H2 target listening on %s\n\n", h2Addr)
 
 	cfg := &config.Config{
 		Host:          *host,
