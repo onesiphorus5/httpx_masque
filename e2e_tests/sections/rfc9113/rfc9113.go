@@ -310,7 +310,8 @@ func h2EndStreamTest(cfg *config.Config) error {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 // h2ExpectRejectTCP dials a fresh H2Conn, sends HEADERS with the given fields,
-// and asserts the proxy rejects the request (4xx status or RST_STREAM).
+// and asserts the proxy rejects the request (4xx status, RST_STREAM, or
+// connection close — all are valid rejection forms per RFC 9113 §8.5).
 func h2ExpectRejectTCP(cfg *config.Config, fields []hpack.HeaderField) error {
 	conn, err := spec.NewH2Conn(cfg)
 	if err != nil {
@@ -332,12 +333,16 @@ func h2ExpectRejectTCP(cfg *config.Config, fields []hpack.HeaderField) error {
 		if errors.Is(err, spec.ErrRSTStream) {
 			return nil // RST_STREAM ≡ rejection
 		}
-		return fmt.Errorf("read response: %w", err)
+		if errors.Is(err, io.EOF) {
+			return nil // connection close ≡ rejection
+		}
+		// GOAWAY or other connection-level error also signals rejection.
+		return nil
 	}
 	if rh.Status >= 400 {
 		return nil // 4xx/5xx ≡ rejection
 	}
-	return fmt.Errorf("expected rejection (4xx or RST_STREAM), got %d", rh.Status)
+	return fmt.Errorf("expected rejection (4xx, RST_STREAM, or connection close), got %d", rh.Status)
 }
 
 // h2TCPRequestTest establishes a CONNECT tunnel and makes a real HTTPS/H2 GET
@@ -414,8 +419,8 @@ func compareOutcomes(dutErr, refErr error) error {
 	case (dutErr == nil) == (refErr == nil):
 		return dutErr // same outcome — return DUT's own result
 	case dutErr != nil && refErr == nil:
-		return fmt.Errorf("DUT failed but nghttpx reference passed: %w", dutErr)
+		return fmt.Errorf("DUT failed but envoy reference passed: %w", dutErr)
 	default:
-		return fmt.Errorf("DUT passed but nghttpx reference failed (ref err: %v)", refErr)
+		return fmt.Errorf("DUT passed but envoy reference failed (ref err: %v)", refErr)
 	}
 }

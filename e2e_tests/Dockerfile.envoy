@@ -1,0 +1,9 @@
+FROM envoyproxy/envoy:v1.32-latest
+RUN apt-get update -q && \
+    apt-get install -y -q --no-install-recommends openssl && \
+    rm -rf /var/lib/apt/lists/*
+COPY docker/envoy-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 8446/tcp
+EXPOSE 8447/udp
+ENTRYPOINT ["/entrypoint.sh"]

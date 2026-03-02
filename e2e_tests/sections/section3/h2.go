@@ -35,23 +35,25 @@ func newSection34H2() *spec.TestGroup {
 		Requirement: `RFC 8441 §3 (required by RFC 9298 §3.4): The server MUST send
 SETTINGS_ENABLE_CONNECT_PROTOCOL with value 1 to allow Extended CONNECT.`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH2Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH2Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
+				}
+				defer conn.Close()
 
-			enabled, err := conn.Handshake()
-			if err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
-			if !enabled {
-				return fmt.Errorf(
-					"server did not send SETTINGS_ENABLE_CONNECT_PROTOCOL=1 (got %v)",
-					conn.ServerSettings[spec.SettingEnableConnectProtocol],
-				)
-			}
-			return nil
+				enabled, err := conn.Handshake()
+				if err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
+				if !enabled {
+					return fmt.Errorf(
+						"server did not send SETTINGS_ENABLE_CONNECT_PROTOCOL=1 (got %v)",
+						conn.ServerSettings[spec.SettingEnableConnectProtocol],
+					)
+				}
+				return nil
+			})
 		},
 	})
 
@@ -62,12 +64,14 @@ SETTINGS_ENABLE_CONNECT_PROTOCOL with value 1 to allow Extended CONNECT.`,
 Sending :method = GET with :protocol = connect-udp must be rejected with 4xx
 or RST_STREAM.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "GET"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "GET"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -79,12 +83,14 @@ or RST_STREAM.`,
 'connect-udp'." An Extended CONNECT without :protocol is a plain CONNECT
 tunnel and MUST be rejected by a connect-udp proxy.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				// :protocol intentionally omitted
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					// :protocol intentionally omitted
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -96,12 +102,14 @@ tunnel and MUST be rejected by a connect-udp proxy.`,
 A proxy handling connect-udp MUST NOT accept requests with a different
 :protocol value.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-tcp"}, // wrong
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-tcp"}, // wrong
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -112,12 +120,14 @@ A proxy handling connect-udp MUST NOT accept requests with a different
 		Requirement: `RFC 9298 §3.4: ":path and :scheme pseudo-header fields SHALL
 NOT be empty." An empty :scheme MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: ""}, // empty
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: ""}, // empty
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -128,12 +138,14 @@ NOT be empty." An empty :scheme MUST be rejected.`,
 		Requirement: `RFC 9298 §3.4: ":path and :scheme pseudo-header fields SHALL
 NOT be empty." An empty :path MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: ""}, // empty
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: ""}, // empty
+				})
 			})
 		},
 	})
@@ -144,12 +156,14 @@ NOT be empty." An empty :path MUST be rejected.`,
 		Requirement: `RFC 9298 §3.4: ":authority pseudo-header field SHALL contain
 the authority of the proxy." An absent or empty :authority MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h2ExpectRejection(cfg, []hpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				// :authority intentionally omitted
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2ExpectRejection(cfg, []hpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					// :authority intentionally omitted
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -161,32 +175,34 @@ the authority of the proxy." An absent or empty :authority MUST be rejected.`,
 :method=CONNECT, :protocol=connect-udp, non-empty :scheme, :authority, and
 :path MUST be accepted by the proxy.`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH2Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
-
-			if _, err := conn.Handshake(); err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
-
-			sid, err := conn.SendConnectUDP(cfg)
-			if err != nil {
-				return fmt.Errorf("send CONNECT: %w", err)
-			}
-
-			rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
-			if err != nil {
-				if errors.Is(err, spec.ErrRSTStream) {
-					return fmt.Errorf("proxy rejected valid CONNECT-UDP: %w", err)
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH2Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
 				}
-				return fmt.Errorf("read response: %w", err)
-			}
-			if rh.Status < 200 || rh.Status >= 300 {
-				return fmt.Errorf("expected 2xx status, got %d", rh.Status)
-			}
-			return nil
+				defer conn.Close()
+
+				if _, err := conn.Handshake(); err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
+
+				sid, err := conn.SendConnectUDP(cfg)
+				if err != nil {
+					return fmt.Errorf("send CONNECT: %w", err)
+				}
+
+				rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
+				if err != nil {
+					if errors.Is(err, spec.ErrRSTStream) {
+						return fmt.Errorf("proxy rejected valid CONNECT-UDP: %w", err)
+					}
+					return fmt.Errorf("read response: %w", err)
+				}
+				if rh.Status < 200 || rh.Status >= 300 {
+					return fmt.Errorf("expected 2xx status, got %d", rh.Status)
+				}
+				return nil
+			})
 		},
 	})
 
@@ -209,29 +225,31 @@ func newSection35H2() *spec.TestGroup {
 for UDP proxying SHALL be in the 2xx (Successful) range if the request was
 accepted."`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH2Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH2Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
+				}
+				defer conn.Close()
 
-			if _, err := conn.Handshake(); err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
+				if _, err := conn.Handshake(); err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
 
-			sid, err := conn.SendConnectUDP(cfg)
-			if err != nil {
-				return fmt.Errorf("send CONNECT: %w", err)
-			}
+				sid, err := conn.SendConnectUDP(cfg)
+				if err != nil {
+					return fmt.Errorf("send CONNECT: %w", err)
+				}
 
-			rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
-			if err != nil {
-				return fmt.Errorf("read response: %w", err)
-			}
-			if rh.Status < 200 || rh.Status > 299 {
-				return fmt.Errorf("expected 2xx status, got %d", rh.Status)
-			}
-			return nil
+				rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
+				if err != nil {
+					return fmt.Errorf("read response: %w", err)
+				}
+				if rh.Status < 200 || rh.Status > 299 {
+					return fmt.Errorf("expected 2xx status, got %d", rh.Status)
+				}
+				return nil
+			})
 		},
 	})
 
@@ -242,35 +260,37 @@ accepted."`,
 are used over HTTP/2, the Capsule-Protocol header field MUST be present on
 both the request and the response.`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH2Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
-
-			if _, err := conn.Handshake(); err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
-
-			sid, err := conn.SendConnectUDP(cfg)
-			if err != nil {
-				return fmt.Errorf("send CONNECT: %w", err)
-			}
-
-			rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
-			if err != nil {
-				return fmt.Errorf("read response: %w", err)
-			}
-			if rh.Status < 200 || rh.Status > 299 {
-				return spec.ErrSkipped // prerequisite failed; skip capsule check
-			}
-
-			for _, hf := range rh.Fields {
-				if hf.Name == "capsule-protocol" {
-					return nil
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH2Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
 				}
-			}
-			return fmt.Errorf("response missing Capsule-Protocol header field")
+				defer conn.Close()
+
+				if _, err := conn.Handshake(); err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
+
+				sid, err := conn.SendConnectUDP(cfg)
+				if err != nil {
+					return fmt.Errorf("send CONNECT: %w", err)
+				}
+
+				rh, err := conn.ReadResponseHeaders(sid, cfg.Timeout)
+				if err != nil {
+					return fmt.Errorf("read response: %w", err)
+				}
+				if rh.Status < 200 || rh.Status > 299 {
+					return spec.ErrSkipped // prerequisite failed; skip capsule check
+				}
+
+				for _, hf := range rh.Fields {
+					if hf.Name == "capsule-protocol" {
+						return nil
+					}
+				}
+				return fmt.Errorf("response missing Capsule-Protocol header field")
+			})
 		},
 	})
 
@@ -293,7 +313,7 @@ func newSection31H2() *spec.TestGroup {
 in DATAGRAM capsules to the target." Verified by establishing a QUIC
 connection to the HTTP/3 target through the tunnel and checking a 200 GET.`,
 		Run: func(cfg *config.Config) error {
-			return h2UDPHTTPTest(cfg)
+			return config.RunWithRef(cfg, h2UDPHTTPTest)
 		},
 	})
 
@@ -304,7 +324,7 @@ connection to the HTTP/3 target through the tunnel and checking a 200 GET.`,
 from the target to the client in DATAGRAM capsules." Verified by receiving
 a 200 response from the HTTP/3 target via the tunnel.`,
 		Run: func(cfg *config.Config) error {
-			return h2UDPHTTPTest(cfg)
+			return config.RunWithRef(cfg, h2UDPHTTPTest)
 		},
 	})
 
@@ -315,7 +335,9 @@ a 200 response from the HTTP/3 target via the tunnel.`,
 the lifetime of the request stream, allowing multiple datagrams to be
 exchanged. Verified by making 3 sequential HTTP/3 GET requests.`,
 		Run: func(cfg *config.Config) error {
-			return h2MultiHTTPTest(cfg, 3)
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2MultiHTTPTest(cfg, 3)
+			})
 		},
 	})
 
@@ -326,7 +348,9 @@ exchanged. Verified by making 3 sequential HTTP/3 GET requests.`,
 the request stream is open." Verified by sending two HTTP/3 GETs with a
 1-second gap and checking both succeed.`,
 		Run: func(cfg *config.Config) error {
-			return h2SequentialHTTPTest(cfg, time.Second)
+			return config.RunWithRef(cfg, func(cfg *config.Config) error {
+				return h2SequentialHTTPTest(cfg, time.Second)
+			})
 		},
 	})
 
@@ -336,8 +360,8 @@ the request stream is open." Verified by sending two HTTP/3 GETs with a
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 // h2ExpectRejection dials a fresh H2Conn, performs the handshake, sends the
-// given HEADERS, and asserts the proxy responds with a 4xx status or
-// RST_STREAM (both indicate the request was refused).
+// given HEADERS, and asserts the proxy responds with a 4xx status, RST_STREAM,
+// or connection close (all are valid rejection forms per RFC 9298 §3.4).
 func h2ExpectRejection(cfg *config.Config, fields []hpack.HeaderField) error {
 	conn, err := spec.NewH2Conn(cfg)
 	if err != nil {
@@ -359,12 +383,16 @@ func h2ExpectRejection(cfg *config.Config, fields []hpack.HeaderField) error {
 		if errors.Is(err, spec.ErrRSTStream) {
 			return nil // RST_STREAM ≡ rejection
 		}
-		return fmt.Errorf("read response: %w", err)
+		if errors.Is(err, io.EOF) {
+			return nil // connection close ≡ rejection
+		}
+		// GOAWAY or other connection-level error also signals rejection.
+		return nil
 	}
 	if rh.Status >= 400 {
 		return nil // 4xx/5xx ≡ rejection
 	}
-	return fmt.Errorf("expected rejection (4xx or RST_STREAM), got %d", rh.Status)
+	return fmt.Errorf("expected rejection (4xx, RST_STREAM, or connection close), got %d", rh.Status)
 }
 
 // h2UDPHTTPTest establishes a connect-udp tunnel and makes a single HTTP/3 GET

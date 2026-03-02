@@ -43,7 +43,7 @@ func main() {
 	tcpTargetHost := flag.String("tcp-target-host", "127.0.0.1", "HTTPS/H2 target host")
 	tcpTargetPort := flag.Int("tcp-target-port", 0, "HTTPS/H2 target port (0 = start a local server automatically)")
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
-	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy host (e.g. nghttpx)")
+	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy host (e.g. envoy)")
 	refPort := flag.Int("ref-port", 0, "reference proxy port (0 = spec mode, no comparison)")
 	flag.Parse()
 
@@ -107,7 +107,7 @@ func main() {
 	fmt.Printf("  proxy      : %s\n", cfg.Addr())
 	fmt.Printf("  tcp target : %s\n", cfg.TCPTargetAddr())
 	if cfg.HasReference() {
-		fmt.Printf("  reference  : %s  (nghttpx)\n", cfg.ReferenceAddr())
+		fmt.Printf("  reference  : %s  (envoy)\n", cfg.ReferenceAddr())
 	}
 	fmt.Printf("\n")
 

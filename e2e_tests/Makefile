@@ -6,13 +6,14 @@ TARGET_CONTAINER:= rfc9298-targets
 TARGET_H2_PORT  := 8444
 TARGET_H3_PORT  := 8445
 
-NGHTTPX_PORT      := 8446
-NGHTTPX_IMAGE     := nghttpx-proxy
-NGHTTPX_CONTAINER := nghttpx-proxy
+ENVOY_H2_PORT     := 8446
+ENVOY_H3_PORT     := 8447
+ENVOY_IMAGE       := envoy-proxy
+ENVOY_CONTAINER   := envoy-proxy
 
 .PHONY: all build test vet run run-9298 run-9113 run-9114 ci clean tidy \
         docker-build docker-start-targets docker-stop-targets \
-        docker-build-nghttpx docker-start-nghttpx docker-stop-nghttpx \
+        docker-build-envoy docker-start-envoy docker-stop-envoy \
         run-9298-docker run-9113-docker run-9114-docker run-docker \
         ci-docker help
 
@@ -100,24 +101,23 @@ docker-start-targets: docker-build
 docker-stop-targets:
 	docker stop $(TARGET_CONTAINER) 2>/dev/null || true
 
-## docker-build-nghttpx: build the nghttpx reference-proxy Docker image
-docker-build-nghttpx:
-	docker build -f Dockerfile.nghttpx -t $(NGHTTPX_IMAGE) .
+## docker-build-envoy: build the Envoy reference-proxy Docker image
+docker-build-envoy:
+	docker build -f Dockerfile.envoy -t $(ENVOY_IMAGE) .
 
-## docker-start-nghttpx: start nghttpx container (host network, port 8446)
-docker-start-nghttpx: docker-build-nghttpx
+## docker-start-envoy: start Envoy container (host network, H2 on 8446, H3 on 8447)
+docker-start-envoy: docker-build-envoy
 	docker run --rm -d \
 		--network=host \
-		--name $(NGHTTPX_CONTAINER) \
-		-e TARGET_HOST=127.0.0.1 \
-		-e TARGET_PORT=$(TARGET_H2_PORT) \
-		-e NGHTTPX_PORT=$(NGHTTPX_PORT) \
-		$(NGHTTPX_IMAGE)
-	@sleep 2
+		--name $(ENVOY_CONTAINER) \
+		-e ENVOY_H2_PORT=$(ENVOY_H2_PORT) \
+		-e ENVOY_H3_PORT=$(ENVOY_H3_PORT) \
+		$(ENVOY_IMAGE)
+	@sleep 3
 
-## docker-stop-nghttpx: stop the nghttpx container
-docker-stop-nghttpx:
-	docker stop $(NGHTTPX_CONTAINER) 2>/dev/null || true
+## docker-stop-envoy: stop the Envoy container
+docker-stop-envoy:
+	docker stop $(ENVOY_CONTAINER) 2>/dev/null || true
 
 ## run-9298-docker: run RFC 9298 suite using the Docker target container
 run-9298-docker: build docker-start-targets
@@ -131,7 +131,7 @@ run-9298-docker: build docker-start-targets
 	$(MAKE) docker-stop-targets
 
 ## run-9113-docker: run RFC 9113 §8.5 suite using the Docker target container
-run-9113-docker: build docker-start-targets docker-start-nghttpx
+run-9113-docker: build docker-start-targets docker-start-envoy
 	./rfc9113spec \
 		-host 127.0.0.1 \
 		-port 8443 \
@@ -139,54 +139,60 @@ run-9113-docker: build docker-start-targets docker-start-nghttpx
 		-tcp-target-host 127.0.0.1 \
 		-tcp-target-port $(TARGET_H2_PORT) \
 		-ref-host 127.0.0.1 \
-		-ref-port $(NGHTTPX_PORT) \
+		-ref-port $(ENVOY_H2_PORT) \
 		-timeout 5s; \
-	$(MAKE) docker-stop-targets docker-stop-nghttpx
+	$(MAKE) docker-stop-targets docker-stop-envoy
 
 ## run-9114-docker: run RFC 9114 §4.4 suite using the Docker target container
-run-9114-docker: build docker-start-targets
+run-9114-docker: build docker-start-targets docker-start-envoy
 	./rfc9114spec \
 		-host 127.0.0.1 \
 		-port 8443 \
 		-skip-verify \
 		-tcp-target-host 127.0.0.1 \
 		-tcp-target-port $(TARGET_H2_PORT) \
+		-ref-host 127.0.0.1 \
+		-ref-port $(ENVOY_H3_PORT) \
 		-timeout 5s; \
-	$(MAKE) docker-stop-targets
+	$(MAKE) docker-stop-targets docker-stop-envoy
 
 ## run-docker: run all three suites using a single Docker target container
-run-docker: build docker-start-targets docker-start-nghttpx
+run-docker: build docker-start-targets docker-start-envoy
 	./rfc9298spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-target-host 127.0.0.1 -target-port $(TARGET_H3_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H2_PORT) \
 		-timeout 5s; \
 	./rfc9113spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
-		-ref-host 127.0.0.1 -ref-port $(NGHTTPX_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H2_PORT) \
 		-timeout 5s; \
 	./rfc9114spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H3_PORT) \
 		-timeout 5s; \
-	$(MAKE) docker-stop-targets docker-stop-nghttpx
+	$(MAKE) docker-stop-targets docker-stop-envoy
 
 ## ci-docker: build, vet, emit JUnit reports using Docker target container
-ci-docker: build docker-start-targets docker-start-nghttpx
+ci-docker: build docker-start-targets docker-start-envoy
 	./rfc9298spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-target-host 127.0.0.1 -target-port $(TARGET_H3_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H2_PORT) \
 		-junit-report report-9298.xml || true; \
 	./rfc9113spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
-		-ref-host 127.0.0.1 -ref-port $(NGHTTPX_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H2_PORT) \
 		-junit-report report-9113.xml || true; \
 	./rfc9114spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-tcp-target-host 127.0.0.1 -tcp-target-port $(TARGET_H2_PORT) \
+		-ref-host 127.0.0.1 -ref-port $(ENVOY_H3_PORT) \
 		-junit-report report-9114.xml || true; \
-	$(MAKE) docker-stop-targets docker-stop-nghttpx
+	$(MAKE) docker-stop-targets docker-stop-envoy
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
 

@@ -52,7 +52,7 @@ type Config struct {
 	// Populated by the "section/N" positional argument syntax.
 	CaseFilters map[string]int
 
-	// ReferenceHost / ReferencePort for the reference proxy (e.g. nghttpx).
+	// ReferenceHost / ReferencePort for the reference proxy (e.g. envoy).
 	// ReferencePort == 0 means spec mode (no comparison).
 	ReferenceHost string
 	ReferencePort int
@@ -90,6 +90,31 @@ func (c *Config) TLSConfig() *tls.Config {
 		ServerName:         c.Host,
 		InsecureSkipVerify: c.TLSSkipVerify, //nolint:gosec
 		NextProtos:         []string{"h2"},
+	}
+}
+
+// RunWithRef runs testFn against the DUT and, when cfg.HasReference(), also
+// against the reference proxy. Returns nil iff both produce the same passing
+// outcome. Use this to add differential testing to any HTTP/2 test case.
+func RunWithRef(cfg *Config, testFn func(*Config) error) error {
+	dutErr := testFn(cfg)
+	if !cfg.HasReference() {
+		return dutErr
+	}
+	refErr := testFn(cfg.WithReference())
+	return CompareOutcomes(dutErr, refErr)
+}
+
+// CompareOutcomes returns nil when DUT and reference both passed or both
+// failed, and an explanatory error when their outcomes diverge.
+func CompareOutcomes(dutErr, refErr error) error {
+	switch {
+	case (dutErr == nil) == (refErr == nil):
+		return dutErr // same outcome — return DUT's own result
+	case dutErr != nil && refErr == nil:
+		return fmt.Errorf("DUT failed but reference passed: %w", dutErr)
+	default:
+		return fmt.Errorf("DUT passed but reference failed (ref err: %v)", refErr)
 	}
 }
 

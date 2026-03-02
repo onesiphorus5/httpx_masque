@@ -49,6 +49,8 @@ func main() {
 	targetPort := flag.Int("target-port", 0, "HTTP/3 target UDP port (0 = start a local server automatically)")
 	pathTmpl := flag.String("path", "", `URI template path (default "/.well-known/masque/udp/{target_host}/{target_port}/"`)
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
+	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy host (e.g. envoy)")
+	refPort := flag.Int("ref-port", 0, "reference proxy port (0 = spec mode, no comparison)")
 	flag.Parse()
 
 	// Section filter and optional case filter from positional arguments.
@@ -100,6 +102,8 @@ func main() {
 		PathTemplate:  *pathTmpl,
 		Sections:      sectionFilter,
 		CaseFilters:   caseFilters,
+		ReferenceHost: *refHost,
+		ReferencePort: *refPort,
 	}
 
 	groups := []*spec.TestGroup{
@@ -110,7 +114,11 @@ func main() {
 
 	fmt.Printf("RFC 9298 – Proxying UDP in HTTP – Conformance Test Suite\n")
 	fmt.Printf("  proxy  : %s\n", cfg.Addr())
-	fmt.Printf("  target : %s\n\n", cfg.TargetAddr())
+	fmt.Printf("  target : %s\n", cfg.TargetAddr())
+	if cfg.HasReference() {
+		fmt.Printf("  reference  : %s  (envoy)\n", cfg.ReferenceAddr())
+	}
+	fmt.Printf("\n")
 
 	r := reporter.New(os.Stdout)
 	for _, g := range groups {
