@@ -43,6 +43,8 @@ func main() {
 	tcpTargetHost := flag.String("tcp-target-host", "127.0.0.1", "HTTPS/H2 target host")
 	tcpTargetPort := flag.Int("tcp-target-port", 0, "HTTPS/H2 target port (0 = start a local server automatically)")
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
+	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy host (e.g. nghttpx)")
+	refPort := flag.Int("ref-port", 0, "reference proxy port (0 = spec mode, no comparison)")
 	flag.Parse()
 
 	// Section filter and optional case filter from positional arguments.
@@ -93,6 +95,8 @@ func main() {
 		TCPTargetPort: tcpPort,
 		Sections:      sectionFilter,
 		CaseFilters:   caseFilters,
+		ReferenceHost: *refHost,
+		ReferencePort: *refPort,
 	}
 
 	groups := []*spec.TestGroup{
@@ -101,7 +105,11 @@ func main() {
 
 	fmt.Printf("RFC 9113 §8.5 – The CONNECT Method (TCP over HTTP/2) – Conformance Test Suite\n")
 	fmt.Printf("  proxy      : %s\n", cfg.Addr())
-	fmt.Printf("  tcp target : %s\n\n", cfg.TCPTargetAddr())
+	fmt.Printf("  tcp target : %s\n", cfg.TCPTargetAddr())
+	if cfg.HasReference() {
+		fmt.Printf("  reference  : %s  (nghttpx)\n", cfg.ReferenceAddr())
+	}
+	fmt.Printf("\n")
 
 	r := reporter.New(os.Stdout)
 	for _, g := range groups {

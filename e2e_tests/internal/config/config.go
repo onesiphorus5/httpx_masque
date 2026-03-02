@@ -51,6 +51,11 @@ type Config struct {
 	// index.  When set, only that test case is run within matching groups.
 	// Populated by the "section/N" positional argument syntax.
 	CaseFilters map[string]int
+
+	// ReferenceHost / ReferencePort for the reference proxy (e.g. nghttpx).
+	// ReferencePort == 0 means spec mode (no comparison).
+	ReferenceHost string
+	ReferencePort int
 }
 
 // Addr returns "host:port".
@@ -86,6 +91,25 @@ func (c *Config) TLSConfig() *tls.Config {
 		InsecureSkipVerify: c.TLSSkipVerify, //nolint:gosec
 		NextProtos:         []string{"h2"},
 	}
+}
+
+// HasReference returns true when a reference proxy port has been configured.
+func (c *Config) HasReference() bool {
+	return c.ReferencePort > 0
+}
+
+// ReferenceAddr returns "referenceHost:referencePort".
+func (c *Config) ReferenceAddr() string {
+	return fmt.Sprintf("%s:%d", c.ReferenceHost, c.ReferencePort)
+}
+
+// WithReference returns a shallow copy with Host/Port replaced by the
+// reference proxy address, so the same test function can be called against it.
+func (c *Config) WithReference() *Config {
+	cp := *c
+	cp.Host = c.ReferenceHost
+	cp.Port = c.ReferencePort
+	return &cp
 }
 
 // ShouldRunSection returns true if the test section should be included in the
