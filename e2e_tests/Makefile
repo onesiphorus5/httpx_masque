@@ -120,15 +120,19 @@ docker-stop-envoy:
 	docker stop $(ENVOY_CONTAINER) 2>/dev/null || true
 
 ## run-9298-docker: run RFC 9298 suite using the Docker target container
-run-9298-docker: build docker-start-targets
+run-9298-docker: build docker-start-targets docker-start-envoy
 	./rfc9298spec \
 		-host 127.0.0.1 \
 		-port 8443 \
 		-skip-verify \
 		-target-host 127.0.0.1 \
 		-target-port $(TARGET_H3_PORT) \
+		-ref-host 127.0.0.1 \
+		-ref-port $(ENVOY_H2_PORT) \
+		-ref-h3-host 127.0.0.1 \
+		-ref-h3-port $(ENVOY_H3_PORT) \
 		-timeout 5s; \
-	$(MAKE) docker-stop-targets
+	$(MAKE) docker-stop-targets docker-stop-envoy
 
 ## run-9113-docker: run RFC 9113 §8.5 suite using the Docker target container
 run-9113-docker: build docker-start-targets docker-start-envoy
@@ -162,6 +166,7 @@ run-docker: build docker-start-targets docker-start-envoy
 		-host 127.0.0.1 -port 8443 -skip-verify \
 		-target-host 127.0.0.1 -target-port $(TARGET_H3_PORT) \
 		-ref-host 127.0.0.1 -ref-port $(ENVOY_H2_PORT) \
+		-ref-h3-host 127.0.0.1 -ref-h3-port $(ENVOY_H3_PORT) \
 		-timeout 5s; \
 	./rfc9113spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \
@@ -176,6 +181,11 @@ run-docker: build docker-start-targets docker-start-envoy
 	$(MAKE) docker-stop-targets docker-stop-envoy
 
 ## ci-docker: build, vet, emit JUnit reports using Docker target container
+# Note: -ref-h3-port is intentionally omitted from ci-docker.  Envoy v1.32's
+# HTTP/3 connect-udp UDP data-plane forwarding is incomplete (allow_extended_connect
+# is "work-in-progress"), so using it as H3 reference in CI would produce false
+# failures when the DUT correctly implements §3.1 H3 but envoy does not.
+# Use run-9298-docker for manual differential testing with the H3 reference.
 ci-docker: build docker-start-targets docker-start-envoy
 	./rfc9298spec \
 		-host 127.0.0.1 -port 8443 -skip-verify \

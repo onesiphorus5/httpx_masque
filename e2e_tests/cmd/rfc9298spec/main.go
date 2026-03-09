@@ -49,8 +49,10 @@ func main() {
 	targetPort := flag.Int("target-port", 0, "HTTP/3 target UDP port (0 = start a local server automatically)")
 	pathTmpl := flag.String("path", "", `URI template path (default "/.well-known/masque/udp/{target_host}/{target_port}/"`)
 	junitReport := flag.String("junit-report", "", "write JUnit XML report to this file")
-	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy host (e.g. envoy)")
-	refPort := flag.Int("ref-port", 0, "reference proxy port (0 = spec mode, no comparison)")
+	refHost := flag.String("ref-host", "127.0.0.1", "reference proxy H2 host (e.g. envoy)")
+	refPort := flag.Int("ref-port", 0, "reference proxy H2 port (0 = no H2 reference)")
+	refH3Host := flag.String("ref-h3-host", "127.0.0.1", "reference proxy H3 host (e.g. envoy)")
+	refH3Port := flag.Int("ref-h3-port", 0, "reference proxy H3 port (0 = no H3 reference)")
 	flag.Parse()
 
 	// Section filter and optional case filter from positional arguments.
@@ -102,8 +104,10 @@ func main() {
 		PathTemplate:  *pathTmpl,
 		Sections:      sectionFilter,
 		CaseFilters:   caseFilters,
-		ReferenceHost: *refHost,
-		ReferencePort: *refPort,
+		ReferenceHost:   *refHost,
+		ReferencePort:   *refPort,
+		ReferenceH3Host: *refH3Host,
+		ReferenceH3Port: *refH3Port,
 	}
 
 	groups := []*spec.TestGroup{
@@ -116,7 +120,10 @@ func main() {
 	fmt.Printf("  proxy  : %s\n", cfg.Addr())
 	fmt.Printf("  target : %s\n", cfg.TargetAddr())
 	if cfg.HasReference() {
-		fmt.Printf("  reference  : %s  (envoy)\n", cfg.ReferenceAddr())
+		fmt.Printf("  reference H2 : %s  (envoy h2)\n", cfg.ReferenceAddr())
+	}
+	if cfg.HasH3Reference() {
+		fmt.Printf("  reference H3 : %s  (envoy h3)\n", cfg.ReferenceH3Addr())
 	}
 	fmt.Printf("\n")
 

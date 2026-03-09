@@ -69,7 +69,8 @@ static_resources:
                     connect_config: {}
 
   # ── HTTP/3 forward-proxy (QUIC) ────────────────────────────────────────────
-  # Handles RFC 9114 §4.4 (TCP CONNECT over HTTP/3).
+  # Handles RFC 9114 §4.4 (TCP CONNECT over HTTP/3) and
+  # RFC 9298 (connect-udp / MASQUE over HTTP/3).
   - name: listener_h3
     address:
       socket_address:
@@ -100,6 +101,7 @@ static_resources:
             allow_extended_connect: true
           upgrade_configs:
           - upgrade_type: CONNECT
+          - upgrade_type: connect-udp
           http_filters:
           - name: envoy.filters.http.dynamic_forward_proxy
             typed_config:
@@ -122,6 +124,8 @@ static_resources:
                   cluster: dynamic_forward_proxy_cluster
                   upgrade_configs:
                   - upgrade_type: CONNECT
+                    connect_config: {}
+                  - upgrade_type: connect-udp
                     connect_config: {}
 
   clusters:

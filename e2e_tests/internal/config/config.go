@@ -52,10 +52,15 @@ type Config struct {
 	// Populated by the "section/N" positional argument syntax.
 	CaseFilters map[string]int
 
-	// ReferenceHost / ReferencePort for the reference proxy (e.g. envoy).
-	// ReferencePort == 0 means spec mode (no comparison).
+	// ReferenceHost / ReferencePort for the reference proxy H2 (TCP) endpoint
+	// (e.g. envoy H2).  ReferencePort == 0 means no H2 reference.
 	ReferenceHost string
 	ReferencePort int
+
+	// ReferenceH3Host / ReferenceH3Port for the reference proxy H3 (QUIC)
+	// endpoint (e.g. envoy H3).  ReferenceH3Port == 0 means no H3 reference.
+	ReferenceH3Host string
+	ReferenceH3Port int
 }
 
 // Addr returns "host:port".
@@ -105,6 +110,18 @@ func RunWithRef(cfg *Config, testFn func(*Config) error) error {
 	return CompareOutcomes(dutErr, refErr)
 }
 
+// RunWithRefH3 runs testFn against the DUT and, when cfg.HasH3Reference(),
+// also against the H3 reference proxy.  Use this to add differential testing
+// to any HTTP/3 test case.
+func RunWithRefH3(cfg *Config, testFn func(*Config) error) error {
+	dutErr := testFn(cfg)
+	if !cfg.HasH3Reference() {
+		return dutErr
+	}
+	refErr := testFn(cfg.WithH3Reference())
+	return CompareOutcomes(dutErr, refErr)
+}
+
 // CompareOutcomes returns nil when DUT and reference both passed or both
 // failed, and an explanatory error when their outcomes diverge.
 func CompareOutcomes(dutErr, refErr error) error {
@@ -118,7 +135,7 @@ func CompareOutcomes(dutErr, refErr error) error {
 	}
 }
 
-// HasReference returns true when a reference proxy port has been configured.
+// HasReference returns true when a reference H2 proxy port has been configured.
 func (c *Config) HasReference() bool {
 	return c.ReferencePort > 0
 }
@@ -129,11 +146,30 @@ func (c *Config) ReferenceAddr() string {
 }
 
 // WithReference returns a shallow copy with Host/Port replaced by the
-// reference proxy address, so the same test function can be called against it.
+// reference H2 proxy address, so the same test function can be called against it.
 func (c *Config) WithReference() *Config {
 	cp := *c
 	cp.Host = c.ReferenceHost
 	cp.Port = c.ReferencePort
+	return &cp
+}
+
+// HasH3Reference returns true when a reference H3 proxy port has been configured.
+func (c *Config) HasH3Reference() bool {
+	return c.ReferenceH3Port > 0
+}
+
+// ReferenceH3Addr returns "referenceH3Host:referenceH3Port".
+func (c *Config) ReferenceH3Addr() string {
+	return fmt.Sprintf("%s:%d", c.ReferenceH3Host, c.ReferenceH3Port)
+}
+
+// WithH3Reference returns a shallow copy with Host/Port replaced by the
+// reference H3 proxy address, so the same test function can be called against it.
+func (c *Config) WithH3Reference() *Config {
+	cp := *c
+	cp.Host = c.ReferenceH3Host
+	cp.Port = c.ReferenceH3Port
 	return &cp
 }
 

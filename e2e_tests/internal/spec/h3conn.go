@@ -184,6 +184,18 @@ type H3Response struct {
 	Status int
 }
 
+// HasCapsuleProtocol reports whether the response carries the
+// "capsule-protocol: ?1" header, indicating that UDP payloads must be sent as
+// DATAGRAM capsules in HTTP DATA frames rather than QUIC DATAGRAM frames.
+func (r *H3Response) HasCapsuleProtocol() bool {
+	for _, f := range r.Fields {
+		if f.Name == "capsule-protocol" && f.Value == "?1" {
+			return true
+		}
+	}
+	return false
+}
+
 // WriteHeaders opens a new client-initiated bidirectional stream, sends a
 // HEADERS frame with the given QPACK-encoded fields, and returns the stream.
 func (c *H3Conn) WriteHeaders(fields []qpack.HeaderField) (*quic.Stream, error) {
@@ -208,7 +220,8 @@ func (c *H3Conn) WriteHeaders(fields []qpack.HeaderField) (*quic.Stream, error) 
 
 // ReadResponseHeaders reads frames from stream until it finds a HEADERS frame
 // and decodes it.  DATA frames before the HEADERS are skipped.
-// A QUIC stream reset from the peer is returned as a wrapped ErrRSTStream.
+// A QUIC stream reset or connection-level application error from the peer is
+// returned as a wrapped ErrRSTStream.
 func (c *H3Conn) ReadResponseHeaders(stream *quic.Stream, timeout time.Duration) (*H3Response, error) {
 	stream.SetReadDeadline(time.Now().Add(timeout)) //nolint:errcheck
 	for {
@@ -217,6 +230,13 @@ func (c *H3Conn) ReadResponseHeaders(stream *quic.Stream, timeout time.Duration)
 			var se *quic.StreamError
 			if errors.As(err, &se) {
 				return nil, fmt.Errorf("%w: code=%d", ErrRSTStream, se.ErrorCode)
+			}
+			// A remote application error (e.g. H3_MESSAGE_ERROR 0x106) means the
+			// server closed the connection in response to an invalid request — treat
+			// it as a rejection equivalent to a stream reset.
+			var ae *quic.ApplicationError
+			if errors.As(err, &ae) && ae.Remote {
+				return nil, fmt.Errorf("%w: app-error=0x%x", ErrRSTStream, ae.ErrorCode)
 			}
 			return nil, err
 		}

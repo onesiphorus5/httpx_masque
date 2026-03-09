@@ -36,23 +36,25 @@ func newSection34H3() *spec.TestGroup {
 SETTINGS with ENABLE_CONNECT_PROTOCOL=1 (0x08) and H3_DATAGRAM=1 (0x33) to
 allow Extended CONNECT with QUIC DATAGRAM support.`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH3Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH3Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
+				}
+				defer conn.Close()
 
-			enableConnect, enableDatagram, err := conn.Handshake()
-			if err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
-			if !enableConnect {
-				return fmt.Errorf("server did not advertise ENABLE_CONNECT_PROTOCOL=1")
-			}
-			if !enableDatagram {
-				return fmt.Errorf("server did not advertise H3_DATAGRAM=1")
-			}
-			return nil
+				enableConnect, enableDatagram, err := conn.Handshake()
+				if err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
+				if !enableConnect {
+					return fmt.Errorf("server did not advertise ENABLE_CONNECT_PROTOCOL=1")
+				}
+				if !enableDatagram {
+					return fmt.Errorf("server did not advertise H3_DATAGRAM=1")
+				}
+				return nil
+			})
 		},
 	})
 
@@ -63,12 +65,14 @@ allow Extended CONNECT with QUIC DATAGRAM support.`,
 CONNECT." Sending :method=GET with :protocol=connect-udp MUST be rejected
 with a 4xx response or stream reset.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "GET"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "GET"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -80,12 +84,14 @@ with a 4xx response or stream reset.`,
 'connect-udp'." An Extended CONNECT without :protocol is a plain tunnel and
 MUST be rejected by a connect-udp proxy.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				// :protocol intentionally omitted
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					// :protocol intentionally omitted
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -96,12 +102,14 @@ MUST be rejected by a connect-udp proxy.`,
 		Requirement: `RFC 9298 §3.4: :protocol SHALL be the token "connect-udp".
 A proxy MUST reject requests with any other :protocol value.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-tcp"},
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-tcp"},
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -112,12 +120,14 @@ A proxy MUST reject requests with any other :protocol value.`,
 		Requirement: `RFC 9298 §3.4: ":path and :scheme pseudo-header fields SHALL
 NOT be empty." An empty :scheme MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: ""},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: ""},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -128,12 +138,14 @@ NOT be empty." An empty :scheme MUST be rejected.`,
 		Requirement: `RFC 9298 §3.4: ":path and :scheme pseudo-header fields SHALL
 NOT be empty." An empty :path MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				{Name: ":authority", Value: cfg.Addr()},
-				{Name: ":path", Value: ""},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					{Name: ":authority", Value: cfg.Addr()},
+					{Name: ":path", Value: ""},
+				})
 			})
 		},
 	})
@@ -144,12 +156,14 @@ NOT be empty." An empty :path MUST be rejected.`,
 		Requirement: `RFC 9298 §3.4: ":authority pseudo-header field SHALL contain
 the authority of the proxy." An absent or empty :authority MUST be rejected.`,
 		Run: func(cfg *config.Config) error {
-			return h3ExpectRejection(cfg, []qpack.HeaderField{
-				{Name: ":method", Value: "CONNECT"},
-				{Name: ":protocol", Value: "connect-udp"},
-				{Name: ":scheme", Value: "https"},
-				// :authority intentionally omitted
-				{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3ExpectRejection(cfg, []qpack.HeaderField{
+					{Name: ":method", Value: "CONNECT"},
+					{Name: ":protocol", Value: "connect-udp"},
+					{Name: ":scheme", Value: "https"},
+					// :authority intentionally omitted
+					{Name: ":path", Value: cfg.BuildPath(cfg.TargetHost, cfg.TargetPort)},
+				})
 			})
 		},
 	})
@@ -161,33 +175,35 @@ the authority of the proxy." An absent or empty :authority MUST be rejected.`,
 :method=CONNECT, :protocol=connect-udp, non-empty :scheme, :authority, and
 :path MUST be accepted by the proxy with a 2xx response.`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH3Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
-
-			if _, _, err := conn.Handshake(); err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
-
-			stream, err := conn.SendConnectUDP(cfg)
-			if err != nil {
-				return fmt.Errorf("send CONNECT: %w", err)
-			}
-			defer stream.Close()
-
-			rh, err := conn.ReadResponseHeaders(stream, cfg.Timeout)
-			if err != nil {
-				if errors.Is(err, spec.ErrRSTStream) {
-					return fmt.Errorf("proxy rejected valid CONNECT-UDP: %w", err)
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH3Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
 				}
-				return fmt.Errorf("read response: %w", err)
-			}
-			if rh.Status < 200 || rh.Status > 299 {
-				return fmt.Errorf("expected 2xx, got %d", rh.Status)
-			}
-			return nil
+				defer conn.Close()
+
+				if _, _, err := conn.Handshake(); err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
+
+				stream, err := conn.SendConnectUDP(cfg)
+				if err != nil {
+					return fmt.Errorf("send CONNECT: %w", err)
+				}
+				defer stream.Close()
+
+				rh, err := conn.ReadResponseHeaders(stream, cfg.Timeout)
+				if err != nil {
+					if errors.Is(err, spec.ErrRSTStream) {
+						return fmt.Errorf("proxy rejected valid CONNECT-UDP: %w", err)
+					}
+					return fmt.Errorf("read response: %w", err)
+				}
+				if rh.Status < 200 || rh.Status > 299 {
+					return fmt.Errorf("expected 2xx, got %d", rh.Status)
+				}
+				return nil
+			})
 		},
 	})
 
@@ -210,30 +226,32 @@ func newSection35H3() *spec.TestGroup {
 for UDP proxying SHALL be in the 2xx (Successful) range if the request was
 accepted."`,
 		Run: func(cfg *config.Config) error {
-			conn, err := spec.NewH3Conn(cfg)
-			if err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer conn.Close()
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				conn, err := spec.NewH3Conn(cfg)
+				if err != nil {
+					return fmt.Errorf("connect: %w", err)
+				}
+				defer conn.Close()
 
-			if _, _, err := conn.Handshake(); err != nil {
-				return fmt.Errorf("handshake: %w", err)
-			}
+				if _, _, err := conn.Handshake(); err != nil {
+					return fmt.Errorf("handshake: %w", err)
+				}
 
-			stream, err := conn.SendConnectUDP(cfg)
-			if err != nil {
-				return fmt.Errorf("send CONNECT: %w", err)
-			}
-			defer stream.Close()
+				stream, err := conn.SendConnectUDP(cfg)
+				if err != nil {
+					return fmt.Errorf("send CONNECT: %w", err)
+				}
+				defer stream.Close()
 
-			rh, err := conn.ReadResponseHeaders(stream, cfg.Timeout)
-			if err != nil {
-				return fmt.Errorf("read response: %w", err)
-			}
-			if rh.Status < 200 || rh.Status > 299 {
-				return fmt.Errorf("expected 2xx, got %d", rh.Status)
-			}
-			return nil
+				rh, err := conn.ReadResponseHeaders(stream, cfg.Timeout)
+				if err != nil {
+					return fmt.Errorf("read response: %w", err)
+				}
+				if rh.Status < 200 || rh.Status > 299 {
+					return fmt.Errorf("expected 2xx, got %d", rh.Status)
+				}
+				return nil
+			})
 		},
 	})
 
@@ -256,7 +274,7 @@ func newSection31H3() *spec.TestGroup {
 in QUIC DATAGRAM frames to the target." Verified by establishing a QUIC
 connection to the HTTP/3 target through the tunnel and checking a 200 GET.`,
 		Run: func(cfg *config.Config) error {
-			return h3UDPHTTPTest(cfg)
+			return config.RunWithRefH3(cfg, h3UDPHTTPTest)
 		},
 	})
 
@@ -267,7 +285,7 @@ connection to the HTTP/3 target through the tunnel and checking a 200 GET.`,
 from the target to the client in QUIC DATAGRAM frames." Verified by receiving
 a 200 response from the HTTP/3 target via the tunnel.`,
 		Run: func(cfg *config.Config) error {
-			return h3UDPHTTPTest(cfg)
+			return config.RunWithRefH3(cfg, h3UDPHTTPTest)
 		},
 	})
 
@@ -278,7 +296,9 @@ a 200 response from the HTTP/3 target via the tunnel.`,
 the lifetime of the request stream, allowing multiple QUIC DATAGRAM frames.
 Verified by making 3 sequential HTTP/3 GET requests over the same QUIC conn.`,
 		Run: func(cfg *config.Config) error {
-			return h3MultiHTTPTest(cfg, 3)
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3MultiHTTPTest(cfg, 3)
+			})
 		},
 	})
 
@@ -289,7 +309,9 @@ Verified by making 3 sequential HTTP/3 GET requests over the same QUIC conn.`,
 the request stream is open." Verified by making two HTTP/3 GETs with a
 1-second idle gap and checking both succeed.`,
 		Run: func(cfg *config.Config) error {
-			return h3SequentialHTTPTest(cfg, time.Second)
+			return config.RunWithRefH3(cfg, func(cfg *config.Config) error {
+				return h3SequentialHTTPTest(cfg, time.Second)
+			})
 		},
 	})
 
@@ -363,7 +385,7 @@ func h3UDPHTTPTest(cfg *config.Config) error {
 		return fmt.Errorf("resolve target addr: %w", err)
 	}
 
-	pc := spec.NewMASQUEPacketConnH3(conn, stream, targetAddr, cfg.Timeout)
+	pc := spec.NewMASQUEPacketConnH3Auto(conn, stream, rh, targetAddr, cfg.Timeout)
 	defer pc.Close() //nolint:errcheck
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
@@ -414,7 +436,7 @@ func h3MultiHTTPTest(cfg *config.Config, n int) error {
 		return fmt.Errorf("resolve target addr: %w", err)
 	}
 
-	pc := spec.NewMASQUEPacketConnH3(conn, stream, targetAddr, cfg.Timeout)
+	pc := spec.NewMASQUEPacketConnH3Auto(conn, stream, rh, targetAddr, cfg.Timeout)
 	defer pc.Close() //nolint:errcheck
 
 	// One http3.Transport → one QUIC connection → n HTTP/3 requests.
@@ -475,7 +497,7 @@ func h3SequentialHTTPTest(cfg *config.Config, gap time.Duration) error {
 		return fmt.Errorf("resolve target addr: %w", err)
 	}
 
-	pc := spec.NewMASQUEPacketConnH3(conn, stream, targetAddr, cfg.Timeout)
+	pc := spec.NewMASQUEPacketConnH3Auto(conn, stream, rh, targetAddr, cfg.Timeout)
 	defer pc.Close() //nolint:errcheck
 
 	// One http3.Transport reused for both GETs (same QUIC connection).

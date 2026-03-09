@@ -195,6 +195,138 @@ func (pc *MASQUEPacketConnH2) EvenContextIDSeen() bool {
 	return pc.evenContextIDSeen.Load()
 }
 
+// ─── MASQUEPacketConnH3Capsule ──────────────────────────────────────────────
+
+// MASQUEPacketConnH3Capsule implements net.PacketConn on top of an HTTP/3
+// connect-udp stream using the Capsule Protocol (RFC 9297 §3).  UDP payloads
+// are encoded as DATAGRAM capsules inside HTTP/3 DATA frames on the request
+// stream.  This is used when the proxy sends "capsule-protocol: ?1" in its
+// response even over HTTP/3 (as envoy does).
+type MASQUEPacketConnH3Capsule struct {
+	h3conn     *H3Conn
+	stream     *quic.Stream
+	targetAddr net.Addr
+	timeout    time.Duration
+
+	incoming chan []byte
+	done     chan struct{}
+
+	dlMu sync.Mutex
+	dl   time.Time
+}
+
+// NewMASQUEPacketConnH3Capsule creates a MASQUEPacketConnH3Capsule and starts its read loop.
+func NewMASQUEPacketConnH3Capsule(c *H3Conn, s *quic.Stream, targetAddr net.Addr, timeout time.Duration) *MASQUEPacketConnH3Capsule {
+	pc := &MASQUEPacketConnH3Capsule{
+		h3conn:     c,
+		stream:     s,
+		targetAddr: targetAddr,
+		timeout:    timeout,
+		incoming:   make(chan []byte, 64),
+		done:       make(chan struct{}),
+	}
+	go pc.readLoop()
+	return pc
+}
+
+func (pc *MASQUEPacketConnH3Capsule) readLoop() {
+	for {
+		select {
+		case <-pc.done:
+			return
+		default:
+		}
+
+		data, err := pc.h3conn.ReadDataFrame(pc.stream, time.Second)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return
+		}
+
+		caps, _ := ReadCapsules(data)
+		for _, c := range caps {
+			if c.Type != CapsuleTypeDatagram {
+				continue
+			}
+			r := bytes.NewReader(c.Value)
+			ctxID, err := ReadVarint(r)
+			if err != nil || ctxID != 0 {
+				continue
+			}
+			udpPayload := c.Value[VarintLen(ctxID):]
+			buf := make([]byte, len(udpPayload))
+			copy(buf, udpPayload)
+			select {
+			case pc.incoming <- buf:
+			case <-pc.done:
+				return
+			default:
+			}
+		}
+	}
+}
+
+// WriteTo encodes b as a DATAGRAM capsule and sends it as an H3 DATA frame.
+func (pc *MASQUEPacketConnH3Capsule) WriteTo(b []byte, _ net.Addr) (int, error) {
+	capsule := EncodeDatagramCapsule(b)
+	if err := pc.h3conn.WriteData(pc.stream, capsule); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// ReadFrom waits for a decoded UDP payload from the read loop.
+func (pc *MASQUEPacketConnH3Capsule) ReadFrom(b []byte) (int, net.Addr, error) {
+	pc.dlMu.Lock()
+	dl := pc.dl
+	pc.dlMu.Unlock()
+
+	var timer <-chan time.Time
+	if !dl.IsZero() {
+		remaining := time.Until(dl)
+		if remaining <= 0 {
+			return 0, nil, &masqueTimeoutErr{"read deadline exceeded"}
+		}
+		timer = time.After(remaining)
+	}
+
+	select {
+	case payload := <-pc.incoming:
+		n := copy(b, payload)
+		return n, pc.targetAddr, nil
+	case <-pc.done:
+		return 0, nil, fmt.Errorf("packet conn closed")
+	case <-timer:
+		return 0, nil, &masqueTimeoutErr{"read deadline exceeded"}
+	}
+}
+
+func (pc *MASQUEPacketConnH3Capsule) Close() error {
+	select {
+	case <-pc.done:
+	default:
+		close(pc.done)
+	}
+	return nil
+}
+
+func (pc *MASQUEPacketConnH3Capsule) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+}
+
+func (pc *MASQUEPacketConnH3Capsule) SetDeadline(t time.Time) error { return pc.SetReadDeadline(t) }
+
+func (pc *MASQUEPacketConnH3Capsule) SetReadDeadline(t time.Time) error {
+	pc.dlMu.Lock()
+	pc.dl = t
+	pc.dlMu.Unlock()
+	return nil
+}
+
+func (pc *MASQUEPacketConnH3Capsule) SetWriteDeadline(time.Time) error { return nil }
+
 // ─── MASQUEPacketConnH3 ─────────────────────────────────────────────────────
 
 // MASQUEPacketConnH3 implements net.PacketConn on top of an HTTP/3
@@ -371,6 +503,26 @@ func NewH3ClientForPacketConn(
 		},
 	}
 	return &http.Client{Transport: tr}, func() { tr.Close() } //nolint:errcheck
+}
+
+// ─── H3 PacketConn factory ────────────────────────────────────────────────
+
+// NewMASQUEPacketConnH3Auto creates the appropriate PacketConn for an HTTP/3
+// connect-udp stream based on the proxy's response headers.
+//
+// When the proxy sends "capsule-protocol: ?1" (as envoy does), UDP payloads
+// must be carried as DATAGRAM capsules in HTTP/3 DATA frames.  Otherwise the
+// RFC 9297 §2 QUIC DATAGRAM frame approach is used.
+func NewMASQUEPacketConnH3Auto(c *H3Conn, s *quic.Stream, rh *H3Response, targetAddr net.Addr, timeout time.Duration) net.PacketConn {
+	if rh.HasCapsuleProtocol() {
+		return NewMASQUEPacketConnH3Capsule(c, s, targetAddr, timeout)
+	}
+	return NewMASQUEPacketConnH3(c, s, targetAddr, timeout)
+}
+
+// ResolveTargetAddr resolves cfg.TargetAddr() to a *net.UDPAddr.
+func ResolveTargetAddr(cfg interface{ TargetAddr() string }) (*net.UDPAddr, error) {
+	return net.ResolveUDPAddr("udp", cfg.TargetAddr())
 }
 
 // ─── internal helpers ──────────────────────────────────────────────────────
